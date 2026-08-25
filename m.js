@@ -895,7 +895,7 @@
       document.addEventListener("keyup", (pp) => this.onKeyUp(pp));
     }
     static ["onKeyDown"](aao) {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
+      const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
       if (9 === aao.keyCode && !isDual) {
         aao.preventDefault();
       }
@@ -913,7 +913,7 @@
             return void MainMenu.toggle();
           }
           if (!MainMenu.isOpened) {
-            const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
+            const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
             if (!(isDual && hj === this.multiboxTab)) {
               aao.preventDefault();
             }
@@ -1556,7 +1556,7 @@
       WsConnection.recycleActiveCell();
     }
     static ["multiboxTab"]() {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
+      const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
       if (isDual) return;
       if (1 === Player.typeID) {
         Player.typeID = 2;
@@ -1656,6 +1656,7 @@
       });
     }
     static ["joinServer"](aba) {
+      this.currentUrl = aba;
       WsConnection.restartAt = (this.restartTimes && this.restartTimes[aba]) || null;
       WsConnection.connect(aba);
     }
