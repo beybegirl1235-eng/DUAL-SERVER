@@ -895,7 +895,8 @@
       document.addEventListener("keyup", (pp) => this.onKeyUp(pp));
     }
     static ["onKeyDown"](aao) {
-      if (9 === aao.keyCode) {
+      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
+      if (9 === aao.keyCode && !isDual) {
         aao.preventDefault();
       }
       const hj = this.getKey(aao);
