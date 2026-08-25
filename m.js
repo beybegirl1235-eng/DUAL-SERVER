@@ -896,8 +896,12 @@
     }
     static ["onKeyDown"](aao) {
       const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
-      if (9 === aao.keyCode && !isDual) {
+      if (9 === aao.keyCode) {
         aao.preventDefault();
+        if (!isDual) {
+          // Non-DUAL: let our handler process it (will call Actions.multiboxTab)
+        }
+        // DUAL: preventDefault only (stops browser focus), event still bubbles to game
       }
       const hj = this.getKey(aao);
       if (
@@ -914,6 +918,10 @@
           }
           if (!MainMenu.isOpened) {
             const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
+            if (isDual && hj === this.multiboxTab) {
+              // DUAL: preventDefault already called above, don't call Actions.multiboxTab
+              return;
+            }
             if (!(isDual && hj === this.multiboxTab)) {
               aao.preventDefault();
             }
