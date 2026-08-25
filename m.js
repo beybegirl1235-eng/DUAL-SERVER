@@ -896,12 +896,12 @@
     }
     static ["onKeyDown"](aao) {
       const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
-      if (9 === aao.keyCode && isDual) {
-        // DUAL: completely skip our handler, let event bubble to game's native handler
-        return;
-      }
       if (9 === aao.keyCode) {
         aao.preventDefault();
+        if (isDual) {
+          Actions.multiboxTab();
+          return;
+        }
       }
       const hj = this.getKey(aao);
       if (
@@ -917,10 +917,6 @@
             return void MainMenu.toggle();
           }
           if (!MainMenu.isOpened) {
-            const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
-            if (isDual && hj === this.multiboxTab) {
-              return;
-            }
             aao.preventDefault();
             return hj !== this.freeSpectateKey || Player.isAlive
               ? hj === this.respawnKey
@@ -1562,7 +1558,13 @@
     }
     static ["multiboxTab"]() {
       const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
-      if (isDual) return;
+      if (isDual) {
+        if (Player._isAlive && !Player._isAlive2) {
+          Player._isAlive2 = true;
+          PacketSender.spawn(1);
+        }
+        return;
+      }
       if (1 === Player.typeID) {
         Player.typeID = 2;
         if (!Player._isAlive2) {
@@ -6204,8 +6206,10 @@
       }
     }
     static ["spawn"](bTab) {
+      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
       const n = bTab || Player.typeID;
-      if (this.chekConnection(n) && ((1 === n && !Player._isAlive) || (2 === n && !Player._isAlive2))) {
+      const allowSecondSpawn = isDual && n === 1 && Player._isAlive && !Player._isAlive2;
+      if (this.chekConnection(n) && ((1 === n && !Player._isAlive) || (2 === n && !Player._isAlive2) || allowSecondSpawn)) {
         Camera.isSpectating = false;
         if ("" === Player.nick) {
           Player.nick = "An unnamed cell";
