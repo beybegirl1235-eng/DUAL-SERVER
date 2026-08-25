@@ -1156,19 +1156,6 @@
       const hn = 2 === Player.typeID ? WorldData.position : qf;
       this.canvasX = (this.x - this.canvas.width / 2) / Camera.viewport + Camera.x + hn.x;
       this.canvasY = (this.y - this.canvas.height / 2) / Camera.viewport + Camera.y + hn.y;
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
-      if (isDual && Player.dualMode && Player.dualCell) {
-        const dx = Player.dualCell.x - Player.x;
-        const dy = Player.dualCell.y - Player.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > 30) {
-          Player.dualCell.x += (dx / dist) * Math.min(dist - 30, 10);
-          Player.dualCell.y += (dy / dist) * Math.min(dist - 30, 10);
-        }
-        const dualX = (this.x - this.canvas.width / 2) / Camera.viewport + Camera.x + Player.dualCell.x - Player.x;
-        const dualY = (this.y - this.canvas.height / 2) / Camera.viewport + Camera.y + Player.dualCell.y - Player.y;
-        PacketSender.mouse(0 | dualX, 0 | dualY, true);
-      }
       return Camera.isSpectating && Targeting.isTurnedOn
         ? void PacketSender.mouse(0 | Targeting.center.x, 0 | Targeting.center.y)
         : Player.movementPaused
@@ -1444,12 +1431,8 @@
       Player.movementPaused = !Player.movementPaused;
     }
     static ["feed"]() {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
       Mouse.send();
       PacketSender.eject();
-      if (isDual && Player.dualMode) {
-        PacketSender.ejectDual();
-      }
     }
     static ["macroFeed"](gd) {
       if (gd) {
@@ -1470,41 +1453,30 @@
       PacketSender.split();
     }
     static ["doubleSplit"]() {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
       this.split();
-      if (isDual && Player.dualMode) PacketSender.split(1);
       setTimeout(() => {
         this.split();
-        if (isDual && Player.dualMode) PacketSender.split(1);
       }, 40);
     }
     static ["split16"]() {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
       this.split();
-      if (isDual && Player.dualMode) PacketSender.split(1);
       setTimeout(() => {
         this.split();
-        if (isDual && Player.dualMode) PacketSender.split(1);
       }, 40);
       setTimeout(() => {
         this.split();
-        if (isDual && Player.dualMode) PacketSender.split(1);
       }, 60);
       setTimeout(() => {
         this.split();
-        if (isDual && Player.dualMode) PacketSender.split(1);
       }, 80);
       setTimeout(() => {
         this.split();
-        if (isDual && Player.dualMode) PacketSender.split(1);
       }, 100);
       setTimeout(() => {
         this.split();
-        if (isDual && Player.dualMode) PacketSender.split(1);
       }, 120);
       setTimeout(() => {
         this.split();
-        if (isDual && Player.dualMode) PacketSender.split(1);
       }, 140);
     }
     static ["toggleSpectate"]() {
@@ -1587,13 +1559,7 @@
     static ["multiboxTab"]() {
       const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
       if (isDual) {
-        if (Player._isAlive && !Player.dualMode) {
-          Player.dualMode = true;
-          Player.dualCell = { x: Player.x, y: Player.y, mass: Player.mass };
-        } else if (Player.dualMode) {
-          Player.dualMode = false;
-          Player.dualCell = null;
-        }
+        PacketSender.freeSpectate();
         return;
       }
       if (1 === Player.typeID) {
@@ -3693,8 +3659,6 @@
       this.deathLocation = aeu;
       this.type = 1;
       this._pairCamera = false;
-      this.dualMode = false;
-      this.dualCell = null;
     }
     static ["update"]() {
       if (0 < this.pieceCount1) {
@@ -6174,27 +6138,14 @@
       this.spawn(tab);
       return true;
     }
-    static ["mouse"](afk, u, isDualCell = false) {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
-      const afj = isDualCell ? 1 : Player.typeID;
+    static ["mouse"](afk, u) {
+      const afj = Player.typeID;
       if (this.chekConnection(afj)) {
         const fa = this.createView(17);
         fa.setUint8(0, 16, true);
         fa.setFloat64(1, Math.fround(~~afk), true);
         fa.setFloat64(9, Math.fround(~~u), true);
         this.sendPacket(fa, afj);
-      }
-      if (isDual && Player.dualMode && !isDualCell && Player.dualCell) {
-        const dx = Player.dualCell.x - Player.x;
-        const dy = Player.dualCell.y - Player.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > 30) {
-          Player.dualCell.x += (dx / dist) * Math.min(dist - 30, 10);
-          Player.dualCell.y += (dy / dist) * Math.min(dist - 30, 10);
-        }
-        const dualX = afk + (Player.dualCell.x - Player.x);
-        const dualY = u + (Player.dualCell.y - Player.y);
-        this.mouse(dualX, dualY, true);
       }
     }
     static ["chat"](am, jj = Player.typeID) {
@@ -6252,10 +6203,8 @@
       }
     }
     static ["spawn"](bTab) {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
       const n = bTab || Player.typeID;
-      const allowSecondSpawn = isDual && n === 1 && Player._isAlive && !Player._isAlive2;
-      if (this.chekConnection(n) && ((1 === n && !Player._isAlive) || (2 === n && !Player._isAlive2) || allowSecondSpawn)) {
+      if (this.chekConnection(n) && ((1 === n && !Player._isAlive) || (2 === n && !Player._isAlive2))) {
         Camera.isSpectating = false;
         if ("" === Player.nick) {
           Player.nick = "An unnamed cell";
@@ -6296,15 +6245,11 @@
       }
     }
     static ["split"]() {
-      const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
       const fv = Player.typeID;
       if (this.chekConnection(fv)) {
         const kp = this.createView(1);
         kp.setUint8(0, 17, true);
         this.sendPacket(kp, fv);
-      }
-      if (isDual && Player.dualMode) {
-        this.split(1);
       }
     }
     static ["split"](tab) {
@@ -6319,13 +6264,6 @@
         const ed = this.createView(1);
         ed.setUint8(0, 21, true);
         this.sendPacket(ed, tab);
-      }
-    }
-    static ["ejectDual"]() {
-      if (this.chekConnection(1)) {
-        const ed = this.createView(1);
-        ed.setUint8(0, 21, true);
-        this.sendPacket(ed, 1);
       }
     }
     static ["freeSpectate"]() {
