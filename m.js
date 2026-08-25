@@ -912,7 +912,10 @@
             return void MainMenu.toggle();
           }
           if (!MainMenu.isOpened) {
-            aao.preventDefault();
+            const isDual = WsConnection.ip && WsConnection.ip.includes(":784/");
+            if (!(isDual && hj === this.multiboxTab)) {
+              aao.preventDefault();
+            }
             return hj !== this.freeSpectateKey || Player.isAlive
               ? hj === this.respawnKey
                   ? void Actions.respawn()
