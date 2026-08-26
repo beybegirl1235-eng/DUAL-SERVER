@@ -895,13 +895,8 @@
       document.addEventListener("keyup", (pp) => this.onKeyUp(pp));
     }
     static ["onKeyDown"](aao) {
-      const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
       if (9 === aao.keyCode) {
         aao.preventDefault();
-        if (isDual) {
-          Actions.multiboxTab();
-          return;
-        }
       }
       const hj = this.getKey(aao);
       if (
@@ -1428,6 +1423,10 @@
       this.ejectInterval = false;
     }
     static ["stopMovementToggle"]() {
+      if (Server.isDualMode()) {
+        PacketSender.sendPin();
+        return;
+      }
       Player.movementPaused = !Player.movementPaused;
     }
     static ["feed"]() {
@@ -1557,9 +1556,8 @@
       WsConnection.recycleActiveCell();
     }
     static ["multiboxTab"]() {
-      const isDual = (WsConnection.ip && WsConnection.ip.includes(":784/")) || (Server.currentUrl && Server.currentUrl.includes(":784/")) || ($("#servers").val() && $("#servers").val().includes(":784/"));
-      if (isDual) {
-        PacketSender.freeSpectate();
+      if (Server.isDualMode()) {
+        PacketSender.sendTab();
         return;
       }
       if (1 === Player.typeID) {
@@ -1577,8 +1575,12 @@
   }
   class Server {
     static ["init"]() {
+      this.currentMode = "";
       this.addEvents();
       this.setServers();
+    }
+    static ["isDualMode"]() {
+      return -1 !== String(this.currentMode || "").toLowerCase().replace(/\s+/g, "").indexOf("dual");
     }
     static ["addEvents"]() {
       $("#servers").change(() => {
@@ -1605,6 +1607,7 @@
         var aco = [];
         var abp = [];
         this.restartTimes = {};
+        this.urlToMode = {};
         var aby = this.fetchServerinfo();
         var { ip: pd, modes: od } = aby;
         Object.keys(od).forEach((ace) => {
@@ -1622,6 +1625,7 @@
           };
           abp[ace] = fq;
           this.restartTimes[fq] = lp ? Date.parse(lp) : null;
+          this.urlToMode[fq] = ace;
         });
       } catch (zi) {
         Notifications.warn("Drag+", "Unexpected error occured while parsing servers info.");
@@ -1660,7 +1664,8 @@
       });
     }
     static ["joinServer"](aba) {
-      this.currentUrl = aba;
+      this.currentMode = (this.urlToMode && this.urlToMode[aba]) || "";
+      console.log("[Server] Joining: " + aba + " mode: " + this.currentMode + " isDual: " + this.isDualMode());
       WsConnection.restartAt = (this.restartTimes && this.restartTimes[aba]) || null;
       WsConnection.connect(aba);
     }
@@ -3422,6 +3427,9 @@
         ww["delete"](ek);
         st.isMine = true;
         st.nick = Player.nick;
+        if (Server.isDualMode() && 2 === afh) {
+          st.cellType = 2;
+        }
       }
     }
     static ["eatCell"](agb, ahu, ahw) {
@@ -3826,7 +3834,10 @@
     static ["dead"]() {
       if (this._isAlive) {
         this._isAlive = false;
-        if (this._isAlive2) {
+        if (Server.isDualMode()) {
+          RelaySender.aliveStatus();
+          this.setInfo();
+        } else if (this._isAlive2) {
           this.type = 2;
           PacketSender.spectate(1);
         } else {
@@ -3838,7 +3849,10 @@
     static ["dead2"]() {
       if (this._isAlive2) {
         this._isAlive2 = false;
-        if (this._isAlive) {
+        if (Server.isDualMode()) {
+          RelaySender.aliveStatus();
+          this.setInfo();
+        } else if (this._isAlive) {
           this.type = 1;
           PacketSender.spectate(2);
         } else {
@@ -4310,6 +4324,11 @@
       return String.fromCharCode(65 + hg) + (abk + 1);
     }
     static get ["position"]() {
+      if (Server.isDualMode()) {
+        this.center2.x = 0;
+        this.center2.y = 0;
+        return this.center2;
+      }
       this.center2.x = this.offset2.x - this.offset.x;
       this.center2.y = this.offset2.y - this.offset.y;
       return this.center2;
@@ -5173,12 +5192,11 @@
         this.resetData();
         this.ip = hy;
         this.intentionalDisconnect = false;
-        const isDual = hy.includes(":784/");
         this.createSocket(1);
-        if (!isDual) {
+        if (!Server.isDualMode()) {
           this.createSocket(2);
         }
-        console.log("Connecting to: " + hy + (isDual ? " [DUAL mode - single connection]" : ""));
+        console.log("Connecting to: " + hy + (Server.isDualMode() ? " [DUAL MODE - single connection]" : ""));
       }
     }
     static ["createSocket"](slot) {
@@ -5220,6 +5238,7 @@
     // Standby Tab 3 opens only once both active tabs are authenticated, so
     // the three reCAPTCHA challenges never need to overlap.
     static ["scheduleBackup"](delay = 1500) {
+      if (Server.isDualMode()) return;
       clearTimeout(this.backupRetryTimer);
       if (this.intentionalDisconnect || !this.ip || !this.connected || !this.connected2 || this.ws3Open || this.backupConnecting) return;
       this.backupRetryTimer = setTimeout(() => this.connectBackup(), delay);
@@ -5279,6 +5298,9 @@
     }
     static ["send"](acr, yj) {
       this.packetCount.out++;
+      if (Server.isDualMode() && 2 === yj) {
+        yj = 1;
+      }
       if (this._protoWaiting && this._protoWaiting[yj]) {
         (this._protoQueue[yj] = this._protoQueue[yj] || []).push(acr);
         return;
@@ -5662,6 +5684,8 @@
         this.getLeaderboardFFA(aam);
       } else if (65 === ahy) {
         this.borderUpdate(aam, ii);
+      } else if (25 === ahy) {
+        this.handleActiveCells(aam, ii);
       } else if (85 === ahy) {
         this.handlePartyCode(aam);
       } else if (87 === ahy) {
@@ -5716,6 +5740,41 @@
       // endian) + optional bonus coins (uint8 flag + uint32). We only need
       // the XP to track the current level and detect level-ups.
       Account.setXp(ajz.readUInt32());
+    }
+    static ["handleActiveCells"](rdr, tab) {
+      if (!Server.isDualMode()) return;
+      const count = rdr.readUInt8();
+      const activeIds = [];
+      for (let i = 0; i < count; i++) {
+        activeIds.push(rdr.readUInt32());
+      }
+      const flags = rdr.readUInt8();
+      const activePinned = !!(flags & 1);
+      const idlePinned = !!(flags & 2);
+      GameLoop.activeCells = activeIds;
+      GameLoop.activePinned = activePinned;
+      GameLoop.idlePinned = idlePinned;
+      GameLoop.activeCellsSwitchStamp = GameLoop.time || Date.now();
+      this.reclassifyDualCells(activeIds);
+      console.log("[Dual] activeCells:", activeIds, "pinned:", activePinned, "idlePinned:", idlePinned);
+    }
+    static ["reclassifyDualCells"](activeIds) {
+      if (!Server.isDualMode()) return;
+      const idleId = activeIds && 1 < activeIds.length ? activeIds[1] : null;
+      for (const [id, cell] of CellData.myCells) {
+        if (idleId && id === idleId) {
+          CellData.myCells.delete(id);
+          CellData.myCells2.set(id, cell);
+          cell.cellType = 2;
+        }
+      }
+      for (const [id, cell] of CellData.myCells2) {
+        if (id !== idleId) {
+          CellData.myCells2.delete(id);
+          CellData.myCells.set(id, cell);
+          cell.cellType = 1;
+        }
+      }
     }
     static ["handleParty"](akb) {
       const tc = akb.readUInt16();
@@ -5920,6 +5979,15 @@
       Camera.autoZoomViewport = m.readFloat32();
     }
     static ["clearCells"](tp) {
+      if (Server.isDualMode()) {
+        CellData.cells.clear();
+        CellData.myCellsIDs.clear();
+        CellData.myCells.clear();
+        CellData.cells2.clear();
+        CellData.myCellsIDs2.clear();
+        CellData.myCells2.clear();
+        return;
+      }
       if (1 === tp) {
         CellData.cells.clear();
         CellData.myCellsIDs.clear();
@@ -5935,6 +6003,13 @@
       }
     }
     static ["clearMyCells"](mp) {
+      if (Server.isDualMode()) {
+        CellData.myCellsIDs.clear();
+        CellData.myCells.clear();
+        CellData.myCellsIDs2.clear();
+        CellData.myCells2.clear();
+        return;
+      }
       if (1 === mp) {
         CellData.myCellsIDs.clear();
         CellData.myCells.clear();
@@ -5947,8 +6022,14 @@
       }
     }
     static ["getMyCellId"](agp, aft) {
-      const ago = 1 === aft ? CellData.myCellsIDs : 2 === aft ? CellData.myCellsIDs2 : CellData.myCellsIDs3;
       const hq = agp.readUInt32();
+      if (Server.isDualMode() && GameLoop.activeCells && 2 <= GameLoop.activeCells.length) {
+        if (hq === GameLoop.activeCells[1]) {
+          CellData.myCellsIDs2.add(hq);
+          return;
+        }
+      }
+      const ago = 1 === aft ? CellData.myCellsIDs : 2 === aft ? CellData.myCellsIDs2 : CellData.myCellsIDs3;
       ago.add(hq);
     }
     static ["getLeaderboard"](abx) {
@@ -6047,9 +6128,15 @@
       } else if (2 === adx) {
         WsConnection.connected2 = true;
       }
-      if (WsConnection.connected && WsConnection.connected2) {
-        this.handleDisabledProperty(false);
-        WsConnection.scheduleBackup();
+      if (Server.isDualMode()) {
+        if (WsConnection.connected) {
+          this.handleDisabledProperty(false);
+        }
+      } else {
+        if (WsConnection.connected && WsConnection.connected2) {
+          this.handleDisabledProperty(false);
+          WsConnection.scheduleBackup();
+        }
       }
     }
     static ["handleDisabledProperty"](du) {
@@ -6060,6 +6147,9 @@
       return new DataView(new ArrayBuffer(dc));
     }
     static ["chekConnection"](iz) {
+      if (Server.isDualMode()) {
+        return WsConnection.connected;
+      }
       return (1 === iz && WsConnection.connected) || (2 === iz && WsConnection.connected2);
     }
     static ["sendPacket"](yl, abl) {
@@ -6252,18 +6342,26 @@
         this.sendPacket(kp, fv);
       }
     }
-    static ["split"](tab) {
-      if (this.chekConnection(tab)) {
-        const kp = this.createView(1);
-        kp.setUint8(0, 17, true);
-        this.sendPacket(kp, tab);
-      }
-    }
-    static ["eject"](tab = Player.typeID) {
-      if (this.chekConnection(tab)) {
+    static ["eject"]() {
+      const is = Player.typeID;
+      if (this.chekConnection(is)) {
         const ed = this.createView(1);
         ed.setUint8(0, 21, true);
-        this.sendPacket(ed, tab);
+        this.sendPacket(ed, is);
+      }
+    }
+    static ["sendTab"]() {
+      if (this.chekConnection(1)) {
+        const pkt = this.createView(1);
+        pkt.setUint8(0, 23, true);
+        this.sendPacket(pkt, 1);
+      }
+    }
+    static ["sendPin"]() {
+      if (this.chekConnection(1)) {
+        const pkt = this.createView(1);
+        pkt.setUint8(0, 24, true);
+        this.sendPacket(pkt, 1);
       }
     }
     static ["freeSpectate"]() {
