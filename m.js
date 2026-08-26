@@ -3835,8 +3835,10 @@
       if (this._isAlive) {
         this._isAlive = false;
         if (Server.isDualMode()) {
-          RelaySender.aliveStatus();
-          this.setInfo();
+          if (!this._isAlive2) {
+            RelaySender.aliveStatus();
+            this.setInfo();
+          }
         } else if (this._isAlive2) {
           this.type = 2;
           PacketSender.spectate(1);
@@ -3850,8 +3852,10 @@
       if (this._isAlive2) {
         this._isAlive2 = false;
         if (Server.isDualMode()) {
-          RelaySender.aliveStatus();
-          this.setInfo();
+          if (!this._isAlive) {
+            RelaySender.aliveStatus();
+            this.setInfo();
+          }
         } else if (this._isAlive) {
           this.type = 1;
           PacketSender.spectate(2);
