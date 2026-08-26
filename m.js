@@ -3781,11 +3781,11 @@
           }
           return tw ? { x: tx / tw, y: ty / tw, radii: tr } : null;
         };
-        if (this._isAlive) {
+        if (this._isAlive || (Server.isDualMode() && 0 < CellData.myCells.size)) {
           pair1 = pairCenter(CellData.myCells, null);
         }
-        if (this._isAlive2) {
-          const yk = WorldData.position;
+        if (this._isAlive2 || (Server.isDualMode() && 0 < CellData.myCells2.size)) {
+          const yk = Server.isDualMode() ? { x: 0, y: 0 } : WorldData.position;
           pair2 = pairCenter(CellData.myCells2, yk);
         }
         // Merged simple average of every cell - the original framing, kept as
