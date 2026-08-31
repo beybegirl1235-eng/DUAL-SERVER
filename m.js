@@ -6392,9 +6392,6 @@
         this.loadLevels();
         this.startXpPoll();
       }
-      if (this.loggedIn2) {
-        this.refreshGameToken(2);
-      }
     }
     static get ["loggedIn"]() {
       return !!this.uuid && "logout" !== this.uuid;
@@ -6465,7 +6462,7 @@
       if (e && e["Mass Boost"]) this.massBoost = e["Mass Boost"];
       this.refreshGameToken(2 === target ? 2 : 1);
       this.updateUI();
-      PacketSender.resendLogin();
+      PacketSender.handshake1(2 === target ? 2 : 1);
       const axp = parseInt(e && e.XP);
       if (!isNaN(axp) && 0 <= axp) {
         this.setXp(axp);
@@ -6493,7 +6490,7 @@
               this.gameToken2 = tk;
               this.gameToken2At = Date.now();
               Notifications.command("Login", "Tab 2 game token ready");
-              PacketSender.resendLogin();
+              PacketSender.handshake1(2);
             }
           })
           .catch(() => {});
@@ -6520,7 +6517,7 @@
             this.gameToken = tk;
             this.gameTokenAt = Date.now();
             Notifications.command("Login", "Game token ready");
-            PacketSender.resendLogin();
+            PacketSender.handshake1(1);
           } else {
             Notifications.warn("Login", "Game token: no token in response");
           }
