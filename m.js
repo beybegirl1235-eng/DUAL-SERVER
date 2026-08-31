@@ -5229,13 +5229,15 @@
       if (2 === slot) {
         // Server rejects multiple connections from same browser;
         // Tab 2 uses a proxy routed through Tab 1's WebSocket.
+        // Don't call onOpen(2) yet — wait until Tab 1's socket is open
+        // so the proxy can send packets immediately.
         const proxy = this.createProxyWebSocket();
         this.ws2 = proxy;
         this.connected2 = true;
         this.backupReady = true;
         this._protoWaiting[2] = false;
         clearTimeout(this["_protoTimer" + 2]);
-        this.onOpen(2);
+        this._tab2PendingOpen = true;
         return proxy;
       }
       const socket = new WebSocket(this.ip, "d1elnjtfbyzq7a");
@@ -5261,6 +5263,7 @@
         CLOSING: WebSocket.CLOSING,
         CLOSED: WebSocket.CLOSED,
         readyState: WebSocket.OPEN,
+        _isProxy: true,
         onopen: null,
         onmessage: null,
         onclose: null,
@@ -5353,28 +5356,39 @@
         remap[0] = this._protoSend[yj][remap[0]];
         payload = remap.buffer;
       }
-      if (1 === yj && this.wsOpen) {
-        this.ws.send(payload);
-      } else if (2 === yj && this.ws2Open) {
-        this.ws2.send(payload);
-      } else if (3 === yj && this.ws3Open) {
-        this.ws3.send(payload);
-      }
-    }
+       if (1 === yj && this.wsOpen) {
+         this.ws.send(payload);
+       } else if (2 === yj && this.ws2) {
+         this.ws2.send(payload);
+       } else if (3 === yj && this.ws3Open) {
+         this.ws3.send(payload);
+       }
+     }
     static ["onOpen"](nq) {
       RelaySender.ip();
       if (1 === nq) SpamDetect.init();
-      PacketSender.init(nq);
-      if (3 !== nq) Notifications.alert("Drag+", "Tab " + nq + " connected");
-      // Tab 2 is a proxy routed through Tab 1; keep it marked connected
-      if (this.ws2) {
-        this.connected2 = true;
-        this.backupReady = true;
-        // Restart Tab 2's ping loop if it was stopped when Tab 1 died
-        if (!this["pingInterval2"]) {
-          PacketSender.initPingLoop(2);
-        }
-      }
+      // Tab 2 is a proxy — skip its handshake to avoid re-login on Tab 1's socket.
+      // Just init the ping loop. The real onOpen(2) is called here once.
+       if (2 === nq && this.ws2 && this.ws2._isProxy) {
+         if (!this["pingInterval2"]) PacketSender.initPingLoop(2);
+         this.connected2 = true;
+         this.backupReady = true;
+         if (3 !== nq) Notifications.alert("Drag+", "Tab " + nq + " connected");
+         return;
+       }
+       PacketSender.init(nq);
+       if (3 !== nq) Notifications.alert("Drag+", "Tab " + nq + " connected");
+       // Restart Tab 2 proxy ping loop if it was stopped (Tab 1 died & reconnects)
+       if (this.ws2 && this.ws2._isProxy && !this["pingInterval2"]) {
+         PacketSender.initPingLoop(2);
+       }
+       // Tab 2 proxy was created but onOpen(2) wasn't called yet (waited for Tab 1).
+       // Now Tab 1 is open — initialize Tab 2.
+       if (this.ws2 && this.ws2._isProxy && this._tab2PendingOpen) {
+         this._tab2PendingOpen = false;
+         this.connected2 = true;
+         this.backupReady = true;
+       }
     }
     static ["onMessage"](alh, adu) {
       this.packetCount["in"]++;
