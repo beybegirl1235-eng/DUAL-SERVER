@@ -2931,55 +2931,53 @@
                 text-transform: uppercase
             }
 
-            #account-box .account-btn.google {
-                background: #4285F4
+            #account-box .account-row {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 4px;
+                margin: 2px 0
             }
-
-            #account-box .account-btn.discord {
-                background: #5865F2
-            }
-
-            #account-box .account-btn:hover,
-            #account-box #account-logout:hover {
-                filter: brightness(1.15)
-            }
-
-            #account-box #account-name {
-                display: inline-block;
-                color: #fff;
-                font-size: 13px;
-                font-family: ubuntu;
-                margin: 3px;
-                max-width: 180px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-                vertical-align: middle
-            }
-
-            #account-box #account-status {
-                text-align: center;
+            #account-box .account-label {
                 color: #aaa;
                 font-size: 11px;
                 font-family: ubuntu;
-                margin: 6px 3px 2px;
-                white-space: nowrap;
+                width: 18px;
+                text-align: right
+            }
+            #account-box .account-btn {
+                display: inline-block;
+                padding: 2px 8px;
+                text-align: center;
+                text-decoration: none;
+                background: #555;
+                border: 0;
+                font-weight: 300;
+                border-radius: 2px;
+                font-size: 11px;
+                font-family: ubuntu;
+                color: #fff;
+                text-transform: uppercase;
+                cursor: pointer
+            }
+            #account-box .account-btn.google { background: #4285F4 }
+            #account-box .account-btn.discord { background: #5865F2 }
+            #account-box .account-btn:hover { filter: brightness(1.15) }
+            #account-box .account-info {
+                color: #fff;
+                font-size: 11px;
+                font-family: ubuntu;
+                max-width: 120px;
                 overflow: hidden;
                 text-overflow: ellipsis;
-                direction: ltr;
-                line-height: 1.4
+                white-space: nowrap
             }
-
-            #account-box #account-status #account-status-logout {
+            #account-box .account-logout-btn {
                 color: #e88;
                 cursor: pointer;
                 text-decoration: none;
-                margin-left: 6px;
-                font-size: 11px
-            }
-
-            #account-box #account-status #account-status-logout:hover {
-                text-decoration: underline
+                font-size: 11px;
+                margin-left: 2px
             }
 
             #banner {
@@ -3338,13 +3336,17 @@
                     <button id="join-party" title="Join a party using a code">Join</button>
                     <button id="leave-party" title="Leave the current party" style="display: none;">Leave</button>
                     <div id="account-box">
-                        <div id="account-login">
-                            <a class="account-btn google" href="php/Auth.php?provider=google" target="_blank" rel="opener" title="Login with Google">Google</a>
-                            <a class="account-btn discord" href="php/Auth.php?provider=discord" target="_blank" rel="opener" title="Login with Discord">Discord</a>
+                        <div id="account-tab1" class="account-row">
+                            <span class="account-label">T1:</span>
+                            <a class="account-btn discord" href="php/Auth.php?provider=discord" target="_blank" rel="opener" title="Tab 1 - Login with Discord">Discord</a>
+                            <span class="account-info" id="account-tab1-info"></span>
+                            <a href="#" class="account-logout-btn" data-tab="1" style="display:none;">x</a>
                         </div>
-                        <div id="account-status">
-                            <span id="account-status-info">Anonymous</span>
-                            <a href="#" id="account-status-logout" style="display: none;">Logout</a>
+                        <div id="account-tab2" class="account-row">
+                            <span class="account-label">T2:</span>
+                            <a class="account-btn google" href="php/Auth.php?provider=google" target="_blank" rel="opener" title="Tab 2 - Login with Google">Google</a>
+                            <span class="account-info" id="account-tab2-info"></span>
+                            <a href="#" class="account-logout-btn" data-tab="2" style="display:none;">x</a>
                         </div>
                     </div>
                     <select class="menu-inputs" id="servers">
