@@ -5318,9 +5318,35 @@
                 WsConnection.send(fj.buffer, adu);
               }).catch(() => {});
             } else if (msg.type === "kick_ui") {
-              Notifications.warn("Drag+", "Tab " + adu + " kicked: " + (msg.reason || "unknown"));
+              const kickReason = msg.reason || "unknown";
+              Notifications.warn("Drag+", "Tab " + adu + " kicked: " + kickReason);
               if (1 === adu) {
-                WsConnection.disconnect();
+                if (WsConnection.ws) {
+                  WsConnection.ws.onopen = WsConnection.ws.onmessage = WsConnection.ws.onclose = WsConnection.ws.onerror = null;
+                  try { WsConnection.ws.close(); } catch (e) {}
+                }
+                WsConnection.ws = null;
+                WsConnection.connected = false;
+                PacketSender.stopPingLoop(1);
+                Player._isAlive = false;
+                PacketParser.clearCells(1);
+                const isDuplicate = kickReason.indexOf("newer") !== -1;
+                if (isDuplicate && WsConnection.connected2) {
+                  console.log("Drag+: Tab 1 kicked (duplicate), Tab 2 active. Will reconnect Tab 1 after Tab 2 is stable...");
+                  setTimeout(() => {
+                    if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws && WsConnection.connected2) {
+                      console.log("Drag+: Tab 2 stable, now reconnecting Tab 1...");
+                      WsConnection.createSocket(1);
+                    }
+                  }, 8000);
+                } else {
+                  setTimeout(() => {
+                    if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws) {
+                      WsConnection.createSocket(1);
+                      console.log("Drag+: Tab 1 kicked, reconnecting...");
+                    }
+                  }, 3000);
+                }
               } else if (2 === adu) {
                 if (WsConnection.ws2) {
                   WsConnection.ws2.onopen = WsConnection.ws2.onmessage = WsConnection.ws2.onclose = WsConnection.ws2.onerror = null;
@@ -5329,11 +5355,22 @@
                 WsConnection.ws2 = null;
                 WsConnection.connected2 = false;
                 PacketSender.stopPingLoop(2);
-                setTimeout(() => {
-                  if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws2) {
-                    WsConnection.createSocket(2);
-                  }
-                }, 2000);
+                const isDuplicate2 = kickReason.indexOf("newer") !== -1;
+                if (isDuplicate2 && WsConnection.connected) {
+                  console.log("Drag+: Tab 2 kicked (duplicate), Tab 1 active. Will reconnect Tab 2 after delay...");
+                  setTimeout(() => {
+                    if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws2 && WsConnection.connected) {
+                      console.log("Drag+: Reconnecting Tab 2 after Tab 1 stable...");
+                      WsConnection.createSocket(2);
+                    }
+                  }, 10000);
+                } else {
+                  setTimeout(() => {
+                    if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws2) {
+                      WsConnection.createSocket(2);
+                    }
+                  }, 2000);
+                }
               }
             } else if (msg.type === "chat_lock") {
               Notifications.warn("Drag+", msg.locked ? "Chat locked" : "Chat unlocked");
@@ -5427,14 +5464,17 @@
       PacketParser.clearCells(numericTab);
       Notifications.alert("Drag+", "Tab " + numericTab + " disconnected");
       console.log("Websocket " + numericTab + " closed");
-      // No auto respawn: the tab reconnects its transport but stays idle
-      // until the user presses Play. The standby is only promoted manually
-      // via K / /kill.
+      const otherTab = numericTab === 1 ? 2 : 1;
+      const otherConnected = numericTab === 1 ? this.connected2 : this.connected;
+      const reconnectDelay = otherConnected ? 8000 : 1000;
+      if (otherConnected) {
+        console.log("Drag+: Tab " + numericTab + " lost while Tab " + otherTab + " alive, waiting " + reconnectDelay + "ms before reconnect");
+      }
       setTimeout(() => {
         const key = numericTab === 1 ? "ws" : "ws2";
         if (this.intentionalDisconnect || !this.ip || this[key]) return;
         this.createSocket(numericTab);
-      }, 1000);
+      }, reconnectDelay);
       if (!(this.wsOpen || this.ws2Open)) {
         MainMenu.open();
       }
@@ -6103,10 +6143,14 @@
         this.handleDisabledProperty(false);
         setTimeout(() => {
           if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws2) {
+            if (!Account.uuid2 || !Account.gameToken2) {
+              console.log("Drag+: Tab 2 missing account or token (uuid2=" + !!Account.uuid2 + " token2=" + !!Account.gameToken2 + "), skipping");
+              return;
+            }
             WsConnection.createSocket(2);
-            console.log("Drag+: Tab 1 ready, opening Tab 2");
+            console.log("Drag+: Tab 1 fully authenticated, opening Tab 2 after 4s delay");
           }
-        }, 2000);
+        }, 4000);
       } else if (2 === adx) {
         WsConnection.connected2 = true;
         if (!WsConnection.connected) this.handleDisabledProperty(false);
