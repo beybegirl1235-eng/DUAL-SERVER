@@ -5100,7 +5100,11 @@
     // The captcha queue serializes token requests so the standby tab never
     // renders a third widget while an earlier one is still pending.
     static ["getToken"](alq) {
-      return this._getToken(alq);
+      const key = "_captchaQueue" + alq;
+      this[key] = this[key] || Promise.resolve();
+      const task = this[key].then(() => this._getToken(alq));
+      this[key] = task.catch(() => {});
+      return task;
     }
     static async ["_getToken"](alq) {
       return new Promise((lv, dq) => {
