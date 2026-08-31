@@ -6340,55 +6340,94 @@
     }
     static ["captureCurrentSession"]() {
       // The php/Auth.php popup logs the browser into one account at a time
-      // (cookie access_token). Every successful login is captured here:
-      // the first account becomes slot 1 (Tab 1), a different account
-      // becomes slot 2 (Tab 2). Tokens are stored so each tab can
-      // authenticate independently, no matter which account the cookie
-      // currently points at.
-      const at = this.readCookie("access_token");
+      // (PHPSESSID + optional access_token cookie). Every successful login
+      // is captured here: the first account becomes slot 1 (Tab 1), a
+      // DIFFERENT account becomes slot 2 (Tab 2). Game tokens are fetched
+      // right away while the browser session belongs to that account.
       const uuid = this.uuid;
-      if (!uuid || "logout" === uuid || !at) return false;
+      if (!uuid || "logout" === uuid) return 0;
+      let slot;
       if (this.slot1 && this.slot1.uuid === uuid) {
-        this.slot1 = { uuid: uuid, nick: this.nick, accessToken: at };
-        this.writeSlot("dragplus_account_1", this.slot1);
-        this.fetchSlotToken(1);
-        return 1;
+        slot = 1;
+      } else if (!this.slot1) {
+        slot = 1;
+      } else {
+        slot = 2;
       }
-      if (!this.slot1) {
-        this.slot1 = { uuid: uuid, nick: this.nick, accessToken: at };
-        this.writeSlot("dragplus_account_1", this.slot1);
-        this.fetchSlotToken(1);
-        return 1;
+      const entry = { uuid: uuid, nick: this.nick, accessToken: "" };
+      entry.accessToken = this.lastAuthAccessToken || this.readCookie("access_token") || "";
+      if (1 === slot) {
+        this.slot1 = entry;
+        this.writeSlot("dragplus_account_1", entry);
+      } else {
+        this.slot2 = entry;
+        this.writeSlot("dragplus_account_2", entry);
+        this.gameToken2 = null;
+        this.gameTokenAt2 = 0;
       }
-      this.slot2 = { uuid: uuid, nick: this.nick, accessToken: at };
-      this.writeSlot("dragplus_account_2", this.slot2);
-      this.gameToken2 = null;
-      this.gameTokenAt2 = 0;
-      this.fetchSlotToken(2);
-      return 2;
+      this.fetchSlotToken(slot);
+      // The access_token cookie can land a moment after the popup callback
+      // fires - retry reading it a few times and upgrade the slot if found.
+      const retries = [800, 2500, 6000];
+      for (const delay of retries) {
+        setTimeout(() => {
+          const at = this.readCookie("access_token");
+          if (!at) return;
+          const cur = 1 === slot ? this.slot1 : this.slot2;
+          if (!cur || cur.uuid !== uuid) return;
+          if (!cur.accessToken) {
+            cur.accessToken = at;
+            this.writeSlot(1 === slot ? "dragplus_account_1" : "dragplus_account_2", cur);
+            this.fetchSlotToken(slot);
+          }
+        }, delay);
+      }
+      this.updateUI();
+      return slot;
     }
     static ["startTokenLoop"]() {
       if (this._tokenLoop) return;
       const tick = () => {
         this.fetchSlotToken(1);
         this.fetchSlotToken(2);
+        this.warnStaleSlot(1);
+        this.warnStaleSlot(2);
       };
       tick();
       this._tokenLoop = setInterval(tick, 180000);
     }
+    static ["warnStaleSlot"](slot) {
+      const entry = 1 === slot ? this.slot1 : this.slot2;
+      const tk = 1 === slot ? this.gameToken1 : this.gameToken2;
+      const at = 1 === slot ? this.gameTokenAt1 : this.gameTokenAt2;
+      if (!entry || !tk) return;
+      this._staleWarned = this._staleWarned || {};
+      if (!entry.accessToken && this.uuid && "logout" !== this.uuid && this.uuid !== entry.uuid && 300000 < Date.now() - at) {
+        if (!this._staleWarned[slot]) {
+          this._staleWarned[slot] = true;
+          Notifications.warn("Login", "Tab " + slot + " account game token expired and cannot auto-refresh (browser session is on the other account). Login again with that account to refresh it.");
+        }
+      } else {
+        this._staleWarned[slot] = false;
+      }
+    }
     static ["fetchSlotToken"](slot) {
       const entry = 1 === slot ? this.slot1 : this.slot2;
-      if (!entry || !entry.uuid || !entry.accessToken) return;
+      if (!entry || !entry.uuid) return;
       if (1 === slot && this.gameToken1 && Date.now() - this.gameTokenAt1 < 150000) return;
       if (2 === slot && this.gameToken2 && Date.now() - this.gameTokenAt2 < 150000) return;
+      // Without a saved access_token the API authenticates through the
+      // browser session cookie - only fetch while that session belongs to
+      // THIS slot's account, otherwise we would get the wrong account token.
+      if (!entry.accessToken && this.uuid && "logout" !== this.uuid && this.uuid !== entry.uuid) return;
       this._slotFetching = this._slotFetching || {};
       if (this._slotFetching[slot]) return;
       this._slotFetching[slot] = true;
       this._slotFetchFail = this._slotFetchFail || {};
-      fetch("https://3rb.io/api/auth/game-token", {
-        credentials: "omit",
-        headers: { Authorization: "Bearer " + entry.accessToken },
-      })
+      const opts = entry.accessToken
+        ? { credentials: "omit", headers: { Authorization: "Bearer " + entry.accessToken } }
+        : { credentials: "include" };
+      fetch("https://3rb.io/api/auth/game-token", opts)
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
           this._slotFetching[slot] = false;
@@ -6497,6 +6536,9 @@
       if (this.uuid) {
         localStorage.setItem("active_session_id", this.uuid);
         localStorage.setItem("active_session_nick", this.nick);
+      }
+      if (e && (e.access_token || e.accessToken)) {
+        this.lastAuthAccessToken = e.access_token || e.accessToken;
       }
       this.captureCurrentSession();
       this.gameToken = null;
@@ -6708,11 +6750,13 @@
       }
       if (!this.loggedIn) {
         $("#account-login").show();
+        $("#account-login2").hide();
         $("#account-status-info").text("Anonymous");
         $("#account-status-logout").hide();
         return;
       }
       $("#account-login").hide();
+      $("#account-login2").show();
       const parts = [];
       parts.push("👤 " + (this.nick || (this.uuid.length > 10 ? this.uuid.slice(0, 10) + "..." : this.uuid)));
       if (this.isVip()) {
