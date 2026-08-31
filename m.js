@@ -5407,17 +5407,20 @@
       // Letting standby traffic through would overwrite Tab 2's rendered state.
       if (3 === adu) return;
       PacketParser.getBuffer(alh, adu);
-      // Relay world packets to Tab 2 (proxy through Tab 1).
-      // Skip MapInit (opcode 240, 546 bytes, byte[1]===1) because
-      // Tab 2's proto-waiting is already resolved and re-parsing it
-      // could corrupt Tab 2's cell state.
-      if (1 === adu && this.ws2 && this.connected2) {
-        const _raw = new Uint8Array(alh.data);
-        if (!(_raw[0] === 240 && _raw.length === 546 && _raw[1] === 1)) {
-          PacketParser.getBuffer({ data: alh.data }, 2);
-        }
-      }
-    }
+       // Relay world packets to Tab 2 (proxy through Tab 1).
+       // Use try-catch to prevent any parsing error from killing the WebSocket.
+       if (1 === adu && this.ws2 && this.connected2) {
+         try {
+           const _raw = new Uint8Array(alh.data);
+           if (!(_raw[0] === 240 && _raw.length === 546 && _raw[1] === 1)) {
+             const _msg = Object.assign({}, alh, { data: alh.data });
+             PacketParser.getBuffer(_msg, 2);
+           }
+         } catch (e) {
+           console.log("Tab 2 relay error:", e);
+         }
+       }
+     }
     static ["handleProto"](alh, adu) {
       const raw = new Uint8Array(alh.data);
       if (240 !== raw[0] || 546 !== raw.length || 1 !== raw[1]) {
