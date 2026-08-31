@@ -1568,10 +1568,18 @@
       Settings.pairCamera = "off" === Settings.pairCamera ? ("off" !== bg && bg) || "on" : "off";
     }
     static ["respawn"]() {
+      // Respawn every dead tab that has a live connection - Tab 1 first,
+      // then Tab 2 if it is connected. This keeps the two-tab pair together
+      // from a single quick-respawn key press.
       const ie = setInterval(() => {
         if (WsConnection.connected) {
-          PacketSender.spawn();
           clearInterval(ie);
+          if (!Player._isAlive) {
+            PacketSender.spawn(1);
+          }
+          if (WsConnection.connected2 && !Player._isAlive2) {
+            PacketSender.spawn(2);
+          }
         }
       }, 100);
     }
@@ -3275,7 +3283,14 @@
     }
     static ["play"]() {
       this.close();
-      PacketSender.spawn();
+      // Spawn both tabs: Tab 1 always, Tab 2 as well when its connection is
+      // live. A single Play click brings the whole pair back.
+      if (!Player._isAlive) {
+        PacketSender.spawn(1);
+      }
+      if (WsConnection.connected2 && !Player._isAlive2) {
+        PacketSender.spawn(2);
+      }
     }
     static ["closeSubMenus"]() {
       Inputs.close();
@@ -5219,9 +5234,11 @@
       // connections are authenticated accounts. Tab 2 therefore never opens
       // until Tab 1 has finished its full handshake AND carries a valid
       // account game token, so the two sockets can never kick each other
-      // in a loop.
+      // in a loop. If no account is logged in yet, keep retrying so Tab 2
+      // connects as soon as the user logs in.
       if (this.tab2Queued || this.ws2) return;
       this.tab2Queued = true;
+      this.tab2WarnedGuest = false;
       const gen = this.tab2Gen;
       const attempt = () => {
         if (this.tab2Gen !== gen || this.intentionalDisconnect || !this.ip) {
@@ -5234,8 +5251,11 @@
           return;
         }
         if (!Account.loginStringFor(1)) {
-          Notifications.warn("Drag+", "3rb.io now blocks two guest tabs from the same IP. Log in with an account to enable Tab 2.");
-          this.tab2Queued = false;
+          if (!this.tab2WarnedGuest) {
+            this.tab2WarnedGuest = true;
+            Notifications.warn("Drag+", "3rb.io now blocks two guest tabs from the same IP. Log in with an account to enable Tab 2.");
+          }
+          setTimeout(attempt, 3000);
           return;
         }
         if (!Account.gameToken1) {
@@ -6022,6 +6042,11 @@
         WsConnection.queueTab2();
       } else if (2 === adx) {
         WsConnection.connected2 = true;
+        // Tab 2 just became playable: if Tab 1 already has a cell, bring
+        // Tab 2's cell back automatically so the pair stays together.
+        if (Player._isAlive) {
+          setTimeout(() => this.spawnTab(2), 400);
+        }
       }
       if (WsConnection.connected && WsConnection.connected2) {
         this.handleDisabledProperty(false);
@@ -6096,6 +6121,7 @@
         add = await WsConnection.getToken(oq);
       } catch (nb) {
         console.log("Multibox: failed to get captcha token for tab " + oq + ":", nb);
+        Notifications.warn("Drag+", "Captcha failed for Tab " + oq + " - retrying the connection.");
         return false;
       }
       var fj = new DataView(new ArrayBuffer(add.length + 3));
@@ -6383,6 +6409,11 @@
         }, delay);
       }
       this.updateUI();
+      // Account captured mid-game: kick the Tab 2 connection gate so it
+      // opens as soon as Tab 1 carries this account.
+      if (WsConnection && WsConnection.connected && !WsConnection.ws2) {
+        WsConnection.queueTab2();
+      }
       return slot;
     }
     static ["startTokenLoop"]() {
@@ -6447,6 +6478,9 @@
           }
           Notifications.command("Login", "Game token ready (Tab " + slot + " account)");
           PacketSender.resendLogin();
+          if (WsConnection && WsConnection.connected && !WsConnection.ws2) {
+            WsConnection.queueTab2();
+          }
         })
         .catch(() => {
           this._slotFetching[slot] = false;
