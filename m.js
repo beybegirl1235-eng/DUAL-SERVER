@@ -5109,12 +5109,18 @@
       this.recycleLocks = new Set();
       this.backupPhase = "Waiting";
       this.backupPhaseSince = Date.now();
+      this.tab1Authed = false;
+      this.tab2Queued = false;
+      this.tab2GuestKicks = 0;
+      this.tab2Gen = (this.tab2Gen || 0) + 1;
       this.registerKeyBindings();
       this.startConnectionStatus();
       window.DRAG_PLUS = {
-        backupStatus: () => this.statusSnapshot(),
+        status: () => this.statusSnapshot(),
         kill: () => this.recycleActiveCell(),
-        promote: (tab) => this.promoteBackup(Number(tab), "console request"),
+        accounts: () => Account.slots(),
+        setAccount: (slot, uuid, accessToken) => Account.setSlot(slot, uuid, accessToken),
+        clearAccounts: () => Account.clearSlots(),
       };
       WorldData.init();
     }
@@ -5199,10 +5205,56 @@
         this.resetData();
         this.ip = hy;
         this.intentionalDisconnect = false;
+        this.tab1Authed = false;
+        this.tab2Queued = false;
+        this.tab2GuestKicks = 0;
+        this.tab2Gen = (this.tab2Gen || 0) + 1;
         this.createSocket(1);
-        this.createSocket(2);
-        console.log("Connecting to: " + hy);
+        console.log("Connecting to: " + hy + " (Tab 1 first, Tab 2 follows after Tab 1 auth)");
       }
+    }
+    static ["queueTab2"]() {
+      // The 2026 game server now kicks every other connection from the same
+      // IP ("New connection from this browser") unless the existing
+      // connections are authenticated accounts. Tab 2 therefore never opens
+      // until Tab 1 has finished its full handshake AND carries a valid
+      // account game token, so the two sockets can never kick each other
+      // in a loop.
+      if (this.tab2Queued || this.ws2) return;
+      this.tab2Queued = true;
+      const gen = this.tab2Gen;
+      const attempt = () => {
+        if (this.tab2Gen !== gen || this.intentionalDisconnect || !this.ip) {
+          if (this.tab2Gen === gen) this.tab2Queued = false;
+          return;
+        }
+        if (this.ws2) return;
+        if (!this.tab1Authed || !this.connected) {
+          setTimeout(attempt, 600);
+          return;
+        }
+        if (!Account.loginStringFor(1)) {
+          Notifications.warn("Drag+", "3rb.io now blocks two guest tabs from the same IP. Log in with an account to enable Tab 2.");
+          this.tab2Queued = false;
+          return;
+        }
+        if (!Account.gameToken1) {
+          Account.fetchSlotToken(1);
+          setTimeout(attempt, 700);
+          return;
+        }
+        this.createSocket(2);
+      };
+      setTimeout(attempt, 1500);
+    }
+    static ["retryTab2Later"]() {
+      this.tab2Queued = false;
+      if (this.intentionalDisconnect || !this.ip) return;
+      if (!Account.loginStringFor(2) && 3 <= (this.tab2GuestKicks || 0)) {
+        Notifications.warn("Drag+", "Tab 2 keeps getting kicked as guest - log in with a second account to keep Tab 2 alive.");
+        return;
+      }
+      this.queueTab2();
     }
     static ["createSocket"](slot) {
       if (!this.ip) return null;
@@ -5226,20 +5278,6 @@
           this.flushProtoQueue(slot);
         }
       }, 700);
-      if (2 === slot) {
-        // Server rejects multiple connections from same browser;
-        // Tab 2 uses a proxy routed through Tab 1's WebSocket.
-        // Don't call onOpen(2) yet — wait until Tab 1's socket is open
-        // so the proxy can send packets immediately.
-        const proxy = this.createProxyWebSocket();
-        this.ws2 = proxy;
-        this.connected2 = true;
-        this.backupReady = true;
-        this._protoWaiting[2] = false;
-        clearTimeout(this["_protoTimer" + 2]);
-        this._tab2PendingOpen = true;
-        return proxy;
-      }
       const socket = new WebSocket(this.ip, "d1elnjtfbyzq7a");
       if (1 === slot) this.ws = socket;
       else if (2 === slot) this.ws2 = socket;
@@ -5251,52 +5289,16 @@
       socket.binaryType = "arraybuffer";
       socket.onopen = () => this.onOpen(slot);
       socket.onmessage = (ev) => this.onMessage(ev, slot);
-      socket.onclose = () => this.onClose(slot, socket);
+      socket.onclose = (ev) => this.onClose(slot, socket, ev);
       socket.onerror = () => this.onError(slot);
     }
-    static ["createProxyWebSocket"]() {
-      const self = this;
-      const proxy = {
-        binaryType: "arraybuffer",
-        OPEN: WebSocket.OPEN,
-        CONNECTING: WebSocket.CONNECTING,
-        CLOSING: WebSocket.CLOSING,
-        CLOSED: WebSocket.CLOSED,
-        readyState: WebSocket.OPEN,
-        _isProxy: true,
-        onopen: null,
-        onmessage: null,
-        onclose: null,
-        onerror: null,
-        _queue: [],
-        send: function (data) {
-          if (self.ws && self.ws.readyState === self.ws.OPEN) {
-            while (self.ws2._queue.length > 0) {
-              self.ws.send(self.ws2._queue.shift());
-            }
-            self.ws.send(data);
-          } else {
-            self.ws2._queue.push(data);
-          }
-        },
-        close: function () {},
-      };
-      return proxy;
-    }
-    // Standby Tab 3 opens only once both active tabs are authenticated, so
-    // the three reCAPTCHA challenges never need to overlap.
+    // Standby Tab 3 was removed: the new 3rb.io server kicks any extra
+    // connection from the same IP, so a third socket can never survive.
     static ["scheduleBackup"](delay = 1500) {
-      clearTimeout(this.backupRetryTimer);
-      if (this.intentionalDisconnect || !this.ip || !this.connected || !this.connected2 || this.ws3Open || this.backupConnecting) return;
-      this.backupRetryTimer = setTimeout(() => this.connectBackup(), delay);
+      return false;
     }
     static ["connectBackup"]() {
-      if (this.intentionalDisconnect || !this.ip || !this.connected || !this.connected2 || this.ws3Open || this.backupConnecting) return;
-      this.backupConnecting = true;
-      this.backupReady = false;
-      this.setBackupPhase("Connecting");
-      this.createSocket(3);
-      this.connectionStatus();
+      return false;
     }
     static ["disconnect"]() {
       this.intentionalDisconnect = true;
@@ -5356,39 +5358,19 @@
         remap[0] = this._protoSend[yj][remap[0]];
         payload = remap.buffer;
       }
-       if (1 === yj && this.wsOpen) {
-         this.ws.send(payload);
-       } else if (2 === yj && this.ws2) {
-         this.ws2.send(payload);
-       } else if (3 === yj && this.ws3Open) {
-         this.ws3.send(payload);
-       }
-     }
+      if (1 === yj && this.wsOpen) {
+        this.ws.send(payload);
+      } else if (2 === yj && this.ws2Open) {
+        this.ws2.send(payload);
+      } else if (3 === yj && this.ws3Open) {
+        this.ws3.send(payload);
+      }
+    }
     static ["onOpen"](nq) {
       RelaySender.ip();
       if (1 === nq) SpamDetect.init();
-      // Tab 2 is a proxy — skip its handshake to avoid re-login on Tab 1's socket.
-      // Just init the ping loop. The real onOpen(2) is called here once.
-       if (2 === nq && this.ws2 && this.ws2._isProxy) {
-         if (!this["pingInterval2"]) PacketSender.initPingLoop(2);
-         this.connected2 = true;
-         this.backupReady = true;
-         if (3 !== nq) Notifications.alert("Drag+", "Tab " + nq + " connected");
-         return;
-       }
-       PacketSender.init(nq);
-       if (3 !== nq) Notifications.alert("Drag+", "Tab " + nq + " connected");
-       // Restart Tab 2 proxy ping loop if it was stopped (Tab 1 died & reconnects)
-       if (this.ws2 && this.ws2._isProxy && !this["pingInterval2"]) {
-         PacketSender.initPingLoop(2);
-       }
-       // Tab 2 proxy was created but onOpen(2) wasn't called yet (waited for Tab 1).
-       // Now Tab 1 is open — initialize Tab 2.
-       if (this.ws2 && this.ws2._isProxy && this._tab2PendingOpen) {
-         this._tab2PendingOpen = false;
-         this.connected2 = true;
-         this.backupReady = true;
-       }
+      PacketSender.init(nq);
+      if (3 !== nq) Notifications.alert("Drag+", "Tab " + nq + " connected");
     }
     static ["onMessage"](alh, adu) {
       this.packetCount["in"]++;
@@ -5401,26 +5383,10 @@
       if (this._protoWaiting && this._protoWaiting[adu] && this.handleProto(alh, adu)) {
         return;
       }
-      // Tab 3 is a transport-only hot standby. Its handshake is completed in
-      // onOpen(), but it must not feed world packets into the two-tab parser:
-      // that parser intentionally treats every non-Tab-1 packet as Tab 2.
-      // Letting standby traffic through would overwrite Tab 2's rendered state.
+      // Slot 3 no longer exists (removed): only tabs 1 and 2 are parsed.
       if (3 === adu) return;
       PacketParser.getBuffer(alh, adu);
-       // Relay world packets to Tab 2 (proxy through Tab 1).
-       // Use try-catch to prevent any parsing error from killing the WebSocket.
-       if (1 === adu && this.ws2 && this.connected2) {
-         try {
-           const _raw = new Uint8Array(alh.data);
-           if (!(_raw[0] === 240 && _raw.length === 546 && _raw[1] === 1)) {
-             const _msg = Object.assign({}, alh, { data: alh.data });
-             PacketParser.getBuffer(_msg, 2);
-           }
-         } catch (e) {
-           console.log("Tab 2 relay error:", e);
-         }
-       }
-     }
+    }
     static ["handleProto"](alh, adu) {
       const raw = new Uint8Array(alh.data);
       if (240 !== raw[0] || 546 !== raw.length || 1 !== raw[1]) {
@@ -5465,43 +5431,40 @@
         this.send(p, adu);
       }
     }
-    static ["onClose"](cq, socket) {
+    static ["onClose"](cq, socket, ev) {
       const numericTab = Number(cq);
       const current = numericTab === 1 ? this.ws : numericTab === 2 ? this.ws2 : this.ws3;
       if (current !== socket) return false;
       PacketSender.stopPingLoop(numericTab);
       clearTimeout(this["_protoTimer" + numericTab]);
       if (this.intentionalDisconnect) return false;
-      if (numericTab === 3) {
-        this.ws3 = null;
-        this.connected3 = false;
-        this.backupReady = false;
-        this.backupConnecting = false;
-        this.setBackupPhase("Retrying");
-        this.scheduleBackup(1800);
-        this.connectionStatus();
-        return true;
-      }
       if (numericTab !== 1 && numericTab !== 2) return false;
+      const reason = ev && ev.reason ? String(ev.reason) : "";
+      if (/new connection/i.test(reason)) {
+        Notifications.warn("Drag+", "Tab " + numericTab + " was replaced by another connection from this IP (new 3rb.io rule)");
+        if (2 === numericTab) {
+          this.tab2GuestKicks = (this.tab2GuestKicks || 0) + 1;
+        }
+      }
       if (numericTab === 1) {
         this.ws = null;
         this.connected = false;
-        PacketSender.stopPingLoop(2);
+        this.tab1Authed = false;
       } else {
         this.ws2 = null;
         this.connected2 = false;
       }
       PacketParser.clearCells(numericTab);
       Notifications.alert("Drag+", "Tab " + numericTab + " disconnected");
-      console.log("Websocket " + numericTab + " closed");
-      // No auto respawn: the tab reconnects its transport but stays idle
-      // until the user presses Play. The standby is only promoted manually
-      // via K / /kill.
-      setTimeout(() => {
-        const key = numericTab === 1 ? "ws" : "ws2";
-        if (this.intentionalDisconnect || !this.ip || this[key]) return;
-        this.createSocket(numericTab);
-      }, 1000);
+      console.log("Websocket " + numericTab + " closed" + (reason ? " (" + reason + ")" : ""));
+      if (1 === numericTab) {
+        setTimeout(() => {
+          if (this.intentionalDisconnect || !this.ip || this.ws) return;
+          this.createSocket(1);
+        }, 1000);
+      } else {
+        this.retryTab2Later();
+      }
       if (!(this.wsOpen || this.ws2Open)) {
         MainMenu.open();
       }
@@ -5512,24 +5475,19 @@
       if (!(this.wsOpen || this.ws2Open)) {
         MainMenu.open();
       }
-      if (3 === alo) {
-        this.connected3 = false;
-        this.backupReady = false;
-        this.backupConnecting = false;
-        this.setBackupPhase("Retrying");
-        this.scheduleBackup(1800);
-      } else if (1 === alo) {
+      if (1 === alo) {
         this.connected = false;
+        this.tab1Authed = false;
+      } else if (2 === alo) {
+        this.connected2 = false;
       }
-      // Tab 2 is a proxy through Tab 1 - follows Tab 1's state,
-      // no independent error handling needed.
       console.log("Websocket " + alo + " errored out!");
     }
     static get ["wsOpen"]() {
       return this.ws && this.ws.readyState === this.ws.OPEN;
     }
     static get ["ws2Open"]() {
-      return this.wsOpen;
+      return this.ws2 && this.ws2.readyState === this.ws2.OPEN;
     }
     static get ["ws3Open"]() {
       return this.ws3 && this.ws3.readyState === this.ws3.OPEN;
@@ -5541,18 +5499,13 @@
         ws.close();
       }
       if (tab === 1) { this.ws = null; this.connected = false; }
-      else if (tab === 2) {
-        // Tab 2 is a proxy through Tab 1; keep the proxy,
-        // just mark it disconnected.
-        this.connected2 = false;
-      }
+      else if (tab === 2) { this.ws2 = null; this.connected2 = false; }
       else { this.ws3 = null; this.connected3 = false; this.backupReady = false; }
       PacketParser.clearCells(tab);
     }
     // ------------------------------------------------------------------
-    // Standby Tab 3 promotion (always on): a hot standby tab is
-    // authenticated and kept in the background. K or /kill manually
-    // promotes it; a death or disconnect automatically promotes it.
+    // Standby Tab 3 was removed: only Tab 1 and Tab 2 remain. These stubs
+    // keep the old hotkeys and call sites harmless.
     // ------------------------------------------------------------------
     static ["setBackupPhase"](phase) {
       this.backupPhase = String(phase || "Waiting");
@@ -5560,95 +5513,29 @@
       this.connectionStatus();
     }
     static ["promoteBackup"](tab, reason = "Standby promotion") {
-      tab = Number(tab);
-      if ((tab !== 1 && tab !== 2) || !this.backupReady || !this.ws3Open || this.promotionInFlight) return false;
-      const promoted = this.ws3;
-      const key = tab === 2 ? "ws2" : "ws";
-      const retired = this[key];
-      this.promotionInFlight = tab;
-      this.pendingPromotions.delete(tab);
-      this.pendingRespawns.delete(tab);
-      PacketSender.stopPingLoop(tab);
-      PacketSender.stopPingLoop(3);
-      if (retired && retired !== promoted) {
-        retired.onopen = retired.onmessage = retired.onclose = retired.onerror = null;
-        try {
-          retired.close(1000, "Drag+ active slot recycled");
-        } catch (e) {}
-      }
-      promoted.onopen = promoted.onmessage = promoted.onclose = promoted.onerror = null;
-      this[key] = promoted;
-      if (tab === 1) this.connected = true; else this.connected2 = true;
-      this.ws3 = null;
-      this.connected3 = false;
-      this.backupReady = false;
-      this.backupConnecting = false;
-      this.setBackupPhase("Replacing");
-      PacketParser.clearCells(tab);
-      if (tab === 1) Player._isAlive = false; else Player._isAlive2 = false;
-      this.bindSocket(promoted, tab);
-      PacketSender.initPingLoop(tab);
-      Player.typeID = tab;
-      if (tab === 1 && Account.loggedIn) {
-        PacketSender.handshake1(1);
-      }
-      Notifications.alert("Drag+", "Standby Tab 3 promoted into Tab " + tab + ": " + reason);
-      const spawn = () => PacketSender.spawnTab(tab);
-      setTimeout(spawn, 100);
-      setTimeout(() => {
-        const alive = tab === 2 ? Player._isAlive2 : Player._isAlive;
-        if (!alive) spawn();
-      }, 650);
-      this.scheduleBackup(900);
-      setTimeout(() => {
-        if (this.promotionInFlight === tab) this.promotionInFlight = 0;
-        this.pumpPromotionQueue();
-        this.connectionStatus();
-      }, 1500);
-      this.connectionStatus();
-      return true;
+      // Standby Tab 3 was removed (the new server kicks a third connection).
+      return false;
     }
     static ["queuePromotion"](tab, reason = "Playable tab died") {
-      tab = Number(tab);
-      if ((tab !== 1 && tab !== 2) || !this.ip) return false;
-      this.pendingPromotions.add(tab);
-      this.lastPromotionReason = reason;
-      setTimeout(() => this.pumpPromotionQueue(), 180);
-      this.connectionStatus();
-      return true;
+      return false;
     }
     static ["pumpPromotionQueue"]() {
-      if (this.promotionInFlight) return false;
-      for (const tab of [...this.pendingPromotions]) {
-        const alive = tab === 2 ? Player._isAlive2 : Player._isAlive;
-        if (alive) {
-          this.pendingPromotions.delete(tab);
-          continue;
-        }
-        if (!this.backupReady || !this.ws3Open) {
-          this.scheduleBackup(0);
-          return false;
-        }
-        return this.promoteBackup(tab, this.lastPromotionReason || "Playable tab died");
-      }
       return false;
     }
     static ["recycleActiveCell"]() {
+      // Standby Tab 3 was removed: K / /kill now just respawns the active
+      // tab's cell instead of promoting a hidden third socket.
       const tab = Number(Player.typeID || 1);
       const alive = tab === 2 ? Player._isAlive2 : Player._isAlive;
       if (!alive) {
         Notifications.warn("Drag+", "Tab " + tab + " is not alive.");
         return false;
       }
-      if (!this.backupReady || !this.ws3Open) {
-        Notifications.warn("Drag+", "Standby Tab 3 is not ready yet; kill/recycle was not performed.");
-        return false;
-      }
       if (this.recycleLocks.has(tab)) return false;
       this.recycleLocks.add(tab);
-      const promoted = this.promoteBackup(tab, "manual K /kill recycle");
+      PacketSender.spawnTab(tab);
       setTimeout(() => this.recycleLocks.delete(tab), 1800);
-      return promoted;
+      return true;
     }
     static ["statusSnapshot"]() {
       const tabStatus = (socket, connected, alive, pending) => {
@@ -5658,20 +5545,10 @@
         if (socket.readyState === WebSocket.OPEN) return connected ? (pending ? "Spawning" : "Ready") : "Verifying";
         return "Reconnecting";
       };
-      let tab3 = "Waiting";
-      if (this.backupReady && this.ws3Open) tab3 = "Ready";
-      else if (this.ws3 && this.ws3.readyState === WebSocket.CONNECTING) tab3 = "Connecting";
-      else if (this.ws3Open) tab3 = "Verifying";
-      else if (this.backupConnecting) tab3 = "Connecting";
-      else if (this.connected && this.connected2) tab3 = this.backupPhase || "Replacing";
       return {
         activeTab: Player.typeID,
         tab1: tabStatus(this.ws, this.connected, Player._isAlive, this.pendingRespawns.has(1)),
         tab2: tabStatus(this.ws2, this.connected2, Player._isAlive2, this.pendingRespawns.has(2)),
-        tab3,
-        standbyReady: Boolean(this.backupReady && this.ws3Open),
-        pendingPromotions: [...this.pendingPromotions],
-        ws3: this.ws3 ? { readyState: this.ws3.readyState, open: this.ws3Open } : null,
       };
     }
     static ["connectionStatus"]() {
@@ -5681,7 +5558,7 @@
         hud = document.createElement("div");
         hud.id = "drag-plus-connection-status";
         hud.style.cssText = "position:fixed;right:5px;z-index:2147483000;text-align:center;font-family:ubuntu,sans-serif;font-size:11px;color:rgba(255,255,255,.75);pointer-events:none;white-space:nowrap;text-shadow:0 1px 2px #000;padding-bottom:3px";
-        hud.title = "Standby Tab 3 hot backup: K or /kill manually promotes it.";
+        hud.title = "Drag+ Multibox - Tab 1 and Tab 2 connection status.";
         document.body.appendChild(hud);
       }
       if (hud) {
@@ -5693,7 +5570,7 @@
           hud.style.bottom = "255px";
         }
         hud.style.width = (Minimap.size || 200) + "px";
-        hud.textContent = "Tab1:" + status.tab1 + " | Tab2:" + status.tab2 + " | Tab3:" + status.tab3;
+        hud.textContent = "Tab1:" + status.tab1 + " | Tab2:" + status.tab2;
       }
       return status;
     }
@@ -6135,27 +6012,19 @@
         return;
       }
       this.initPingLoop(adx);
-      if (3 === adx) {
-        WsConnection.connected3 = true;
-        WsConnection.backupReady = true;
-        WsConnection.backupConnecting = false;
-        console.log("Drag+: Standby Tab 3 ready");
-        WsConnection.setBackupPhase("Ready");
-        WsConnection.pumpPromotionQueue();
-        return;
-      }
       this.accountPacketSent = false;
       Camera.isSpectating = false;
       Camera.freeSpectate = false;
       console.log("Connected to: " + WsConnection.ip);
       if (1 === adx) {
         WsConnection.connected = true;
+        WsConnection.tab1Authed = true;
+        WsConnection.queueTab2();
       } else if (2 === adx) {
         WsConnection.connected2 = true;
       }
       if (WsConnection.connected && WsConnection.connected2) {
         this.handleDisabledProperty(false);
-        WsConnection.scheduleBackup();
       }
     }
     static ["handleDisabledProperty"](du) {
@@ -6188,13 +6057,14 @@
     }
     static ["handshake1"](ahn) {
       // Login packet: [255] + UTF-16LE(string) + zero terminator (00 00).
-      // Guest (no account) sends an empty string -> [255, 0, 0], which is
-      // byte-for-byte what the old client always sent. A logged-in account
-      // sends [255, unicode(uuid|gameToken), 0, 0].
-      // Only Tab 1 carries the account: the game server allows a single
-      // connection per account (concurrent-login protection), so Tabs 2/3
-      // must stay guests or they get kicked in a reconnect loop.
-      const str = 1 === Number(ahn) ? Account.buildLoginString(Account.uuid) : "";
+      // Guest (no account) sends an empty string -> [255, 0, 0]. A logged-in
+      // account sends [255, unicode(uuid|gameToken), 0, 0].
+      // Each tab carries its OWN account: the game server allows a single
+      // connection per account (concurrent-login protection) and, since the
+      // last update, kicks every second guest connection from the same IP
+      // ("New connection from this browser"). Tab 1 uses slot 1, Tab 2 uses
+      // slot 2 (falling back to guest).
+      const str = 1 === Number(ahn) ? Account.loginStringFor(1) : Account.loginStringFor(2);
       console.log("Drag+ Login packet (tab " + ahn + "): " + (str ? (str.length > 24 ? str.slice(0, 24) + "..." : str) : "guest"));
       if (!str) {
         const px = new Uint8Array([255, 0, 0]);
@@ -6211,8 +6081,8 @@
       WsConnection.send(bytes, ahn);
     }
     static ["resendLogin"]() {
-      [1, 2, 3].forEach((tab) => {
-        if ((1 === tab && WsConnection.connected) || (2 === tab && WsConnection.connected2) || (3 === tab && WsConnection.connected3)) {
+      [1, 2].forEach((tab) => {
+        if ((1 === tab && WsConnection.connected) || (2 === tab && WsConnection.connected2)) {
           this.handshake1(tab);
         }
       });
@@ -6424,6 +6294,13 @@
       this.xpBoost = null;
       this.massBoost = null;
       this._xpPoll = null;
+      this._tokenLoop = null;
+      this.slot1 = this.readSlot("dragplus_account_1");
+      this.slot2 = this.readSlot("dragplus_account_2");
+      this.gameToken1 = null;
+      this.gameTokenAt1 = 0;
+      this.gameToken2 = null;
+      this.gameTokenAt2 = 0;
       window.authResponse = (res) => {
         try {
           this.onAuthResponse(res);
@@ -6439,6 +6316,147 @@
         this.loadLevels();
         this.startXpPoll();
       }
+      this.captureCurrentSession();
+      this.startTokenLoop();
+      this.updateUI();
+    }
+    static ["readCookie"](name) {
+      const parts = ("; " + document.cookie).split("; " + name + "=");
+      return 2 === parts.length ? parts.pop().split(";").shift() : "";
+    }
+    static ["readSlot"](key) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (obj && obj.uuid) return obj;
+      } catch (e) {}
+      return null;
+    }
+    static ["writeSlot"](key, obj) {
+      try {
+        localStorage.setItem(key, JSON.stringify(obj));
+      } catch (e) {}
+    }
+    static ["captureCurrentSession"]() {
+      // The php/Auth.php popup logs the browser into one account at a time
+      // (cookie access_token). Every successful login is captured here:
+      // the first account becomes slot 1 (Tab 1), a different account
+      // becomes slot 2 (Tab 2). Tokens are stored so each tab can
+      // authenticate independently, no matter which account the cookie
+      // currently points at.
+      const at = this.readCookie("access_token");
+      const uuid = this.uuid;
+      if (!uuid || "logout" === uuid || !at) return false;
+      if (this.slot1 && this.slot1.uuid === uuid) {
+        this.slot1 = { uuid: uuid, nick: this.nick, accessToken: at };
+        this.writeSlot("dragplus_account_1", this.slot1);
+        this.fetchSlotToken(1);
+        return 1;
+      }
+      if (!this.slot1) {
+        this.slot1 = { uuid: uuid, nick: this.nick, accessToken: at };
+        this.writeSlot("dragplus_account_1", this.slot1);
+        this.fetchSlotToken(1);
+        return 1;
+      }
+      this.slot2 = { uuid: uuid, nick: this.nick, accessToken: at };
+      this.writeSlot("dragplus_account_2", this.slot2);
+      this.gameToken2 = null;
+      this.gameTokenAt2 = 0;
+      this.fetchSlotToken(2);
+      return 2;
+    }
+    static ["startTokenLoop"]() {
+      if (this._tokenLoop) return;
+      const tick = () => {
+        this.fetchSlotToken(1);
+        this.fetchSlotToken(2);
+      };
+      tick();
+      this._tokenLoop = setInterval(tick, 180000);
+    }
+    static ["fetchSlotToken"](slot) {
+      const entry = 1 === slot ? this.slot1 : this.slot2;
+      if (!entry || !entry.uuid || !entry.accessToken) return;
+      if (1 === slot && this.gameToken1 && Date.now() - this.gameTokenAt1 < 150000) return;
+      if (2 === slot && this.gameToken2 && Date.now() - this.gameTokenAt2 < 150000) return;
+      this._slotFetching = this._slotFetching || {};
+      if (this._slotFetching[slot]) return;
+      this._slotFetching[slot] = true;
+      this._slotFetchFail = this._slotFetchFail || {};
+      fetch("https://3rb.io/api/auth/game-token", {
+        credentials: "omit",
+        headers: { Authorization: "Bearer " + entry.accessToken },
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          this._slotFetching[slot] = false;
+          const tk = d && (d.token || (d.data && d.data.token));
+          if (!tk) {
+            this._slotFetchFail[slot] = (this._slotFetchFail[slot] || 0) + 1;
+            Notifications.warn("Login", "Game token failed for account slot " + slot + (3 === this._slotFetchFail[slot] ? " - the saved account token looks expired, please login again or use DRAG_PLUS.clearAccounts()" : ""));
+            return;
+          }
+          this._slotFetchFail[slot] = 0;
+          if (1 === slot) {
+            this.gameToken1 = tk;
+            this.gameTokenAt1 = Date.now();
+          } else {
+            this.gameToken2 = tk;
+            this.gameTokenAt2 = Date.now();
+          }
+          Notifications.command("Login", "Game token ready (Tab " + slot + " account)");
+          PacketSender.resendLogin();
+        })
+        .catch(() => {
+          this._slotFetching[slot] = false;
+          this._slotFetchFail[slot] = (this._slotFetchFail[slot] || 0) + 1;
+        });
+    }
+    static ["loginStringFor"](slot) {
+      if (1 === slot) {
+        if (!this.slot1 || !this.slot1.uuid) return "";
+        return this.gameToken1 ? this.slot1.uuid + "|" + this.gameToken1 : this.slot1.uuid;
+      }
+      if (!this.slot2 || !this.slot2.uuid) return "";
+      // The server allows one connection per account: never send the same
+      // account from Tab 2 or it will be kicked in a reconnect loop.
+      if (this.slot1 && this.slot1.uuid === this.slot2.uuid) return "";
+      return this.gameToken2 ? this.slot2.uuid + "|" + this.gameToken2 : this.slot2.uuid;
+    }
+    static ["slots"]() {
+      return {
+        tab1: this.slot1 ? { uuid: this.slot1.uuid, nick: this.slot1.nick, hasToken: !!this.slot1.accessToken, gameToken: !!this.gameToken1 } : null,
+        tab2: this.slot2 ? { uuid: this.slot2.uuid, nick: this.slot2.nick, hasToken: !!this.slot2.accessToken, gameToken: !!this.gameToken2 } : null,
+      };
+    }
+    static ["setSlot"](slot, uuid, accessToken) {
+      const entry = { uuid: String(uuid || ""), nick: "", accessToken: String(accessToken || "") };
+      if (1 === slot) {
+        this.slot1 = entry.uuid ? entry : null;
+        this.writeSlot("dragplus_account_1", this.slot1);
+        this.gameToken1 = null;
+        this.gameTokenAt1 = 0;
+      } else {
+        this.slot2 = entry.uuid ? entry : null;
+        this.writeSlot("dragplus_account_2", this.slot2);
+        this.gameToken2 = null;
+        this.gameTokenAt2 = 0;
+      }
+      this.fetchSlotToken(slot);
+      this.updateUI();
+      PacketSender.resendLogin();
+    }
+    static ["clearSlots"]() {
+      this.slot1 = null;
+      this.slot2 = null;
+      this.gameToken1 = null;
+      this.gameToken2 = null;
+      localStorage.removeItem("dragplus_account_1");
+      localStorage.removeItem("dragplus_account_2");
+      this.updateUI();
+      PacketSender.resendLogin();
     }
     static get ["loggedIn"]() {
       return !!this.uuid && "logout" !== this.uuid;
@@ -6480,6 +6498,7 @@
         localStorage.setItem("active_session_id", this.uuid);
         localStorage.setItem("active_session_nick", this.nick);
       }
+      this.captureCurrentSession();
       this.gameToken = null;
       this.gameTokenAt = 0;
       this.levels = (e && e.Shop && e.Shop.Levels) || this.levels;
@@ -6648,6 +6667,7 @@
       localStorage.removeItem("active_session_id");
       localStorage.removeItem("active_session_nick");
       fetch("php/Auth.php?logout", { credentials: "include" }).catch(() => {});
+      this.clearSlots();
       this.updateUI();
     }
     static ["handleStorageChange"](e) {
@@ -6680,6 +6700,12 @@
       });
     }
     static ["updateUI"]() {
+      const tab2 = document.getElementById("account-tab2");
+      if (tab2) {
+        const s1 = this.slot1 ? (this.slot1.nick || this.slot1.uuid.slice(0, 12)) : "none";
+        const s2 = this.slot2 ? (this.slot2.nick || this.slot2.uuid.slice(0, 12)) : "none";
+        tab2.textContent = "Tab1: " + s1 + "   |   Tab2: " + s2;
+      }
       if (!this.loggedIn) {
         $("#account-login").show();
         $("#account-status-info").text("Anonymous");
