@@ -5174,7 +5174,6 @@
         this.ip = hy;
         this.intentionalDisconnect = false;
         this.createSocket(1);
-        this.createSocket(2);
         console.log("Connecting to: " + hy);
       }
     }
@@ -6099,10 +6098,17 @@
       console.log("Connected to: " + WsConnection.ip);
       if (1 === adx) {
         WsConnection.connected = true;
+        this.handleDisabledProperty(false);
+        setTimeout(() => {
+          if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws2) {
+            WsConnection.createSocket(2);
+            console.log("Drag+: Tab 1 ready, opening Tab 2");
+          }
+        }, 2000);
       } else if (2 === adx) {
         WsConnection.connected2 = true;
+        if (!WsConnection.connected) this.handleDisabledProperty(false);
       }
-      this.handleDisabledProperty(false);
     }
     static ["handleDisabledProperty"](du) {
       document.querySelector("#button-play").disabled = du;
