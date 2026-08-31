@@ -5370,6 +5370,10 @@
       if (this.ws2) {
         this.connected2 = true;
         this.backupReady = true;
+        // Restart Tab 2's ping loop if it was stopped when Tab 1 died
+        if (!this["pingInterval2"]) {
+          PacketSender.initPingLoop(2);
+        }
       }
     }
     static ["onMessage"](alh, adu) {
@@ -5465,11 +5469,7 @@
       if (numericTab === 1) {
         this.ws = null;
         this.connected = false;
-        this.connected2 = false;
         PacketSender.stopPingLoop(2);
-        if (this.ws2) {
-          this.ws2._queue = [];
-        }
       } else {
         this.ws2 = null;
         this.connected2 = false;
