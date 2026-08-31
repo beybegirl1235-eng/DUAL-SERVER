@@ -6143,8 +6143,8 @@
         this.handleDisabledProperty(false);
         setTimeout(() => {
           if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws2) {
-            if (!Account.uuid2 || !Account.gameToken2) {
-              console.log("Drag+: Tab 2 missing account or token (uuid2=" + !!Account.uuid2 + " token2=" + !!Account.gameToken2 + "), skipping");
+            if (!Account.uuid2) {
+              console.log("Drag+: Tab 2 has no account (uuid2 missing), skipping");
               return;
             }
             WsConnection.createSocket(2);
