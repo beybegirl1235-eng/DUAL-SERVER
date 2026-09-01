@@ -6147,6 +6147,9 @@
     static ["resendLogin"]() {
       [1, 2].forEach((tab) => {
         if ((1 === tab && WsConnection.connected) || (2 === tab && WsConnection.connected2)) {
+          if (!Account.tokenFreshEnough(tab)) {
+            return;
+          }
           this.handshake1(tab);
         }
       });
@@ -6567,6 +6570,15 @@
       // account from Tab 2 or it will be kicked in a reconnect loop.
       if (this.slot1 && this.slot1.uuid === this.slot2.uuid) return "";
       return this.gameToken2 ? this.slot2.uuid + "|" + this.gameToken2 : this.slot2.uuid;
+    }
+    static ["tokenFreshEnough"](slot) {
+      // Re-sending an old token could make the server re-validate a healthy
+      // connection and downgrade it to a guest. Only re-send the Login
+      // packet when the token is fresh (or the tab is a plain guest).
+      const tk = 1 === slot ? this.gameToken1 : this.gameToken2;
+      const at = 1 === slot ? this.gameTokenAt1 : this.gameTokenAt2;
+      if (!tk) return true;
+      return Date.now() - at < 270000;
     }
     static ["slots"]() {
       return {
