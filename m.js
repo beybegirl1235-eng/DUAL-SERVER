@@ -5128,6 +5128,10 @@
       this.tab2Queued = false;
       this.tab2GuestKicks = 0;
       this.tab2Gen = (this.tab2Gen || 0) + 1;
+      this.kickCount = 0;
+      this.kickWindowStart = 0;
+      this.kickPauseUntil = 0;
+      this.tab2Disabled = "1" === localStorage.getItem("dragplus_tab2_disabled");
       this.registerKeyBindings();
       this.startConnectionStatus();
       window.DRAG_PLUS = {
@@ -5137,6 +5141,18 @@
         dumpTokens: () => Account.dumpTokens(),
         setAccount: (slot, uuid, accessToken) => Account.setSlot(slot, uuid, accessToken),
         clearAccounts: () => Account.clearSlots(),
+        disableTab2: () => {
+          this.tab2Disabled = true;
+          localStorage.setItem("dragplus_tab2_disabled", "1");
+          try { this.closeTab(2); } catch (e) {}
+          Notifications.warn("Drag+", "Tab 2 disabled (solo test mode).");
+        },
+        enableTab2: () => {
+          this.tab2Disabled = false;
+          localStorage.removeItem("dragplus_tab2_disabled");
+          Notifications.warn("Drag+", "Tab 2 enabled.");
+          this.queueTab2();
+        },
       };
       WorldData.init();
     }
@@ -5270,6 +5286,7 @@
       // guest. That way the two sockets can never kick each other: Tab 1
       // is exempt (account), and Tab 2 only gets replaced when Tab 1
       // reconnects - after which it reconnects and respawns automatically.
+      if (this.tab2Disabled) return;
       if (this.tab2Queued || this.ws2) return;
       this.tab2Queued = true;
       this.tab2WarnedGuest = false;
@@ -5277,6 +5294,10 @@
       const attempt = () => {
         if (this.tab2Gen !== gen || this.intentionalDisconnect || !this.ip) {
           if (this.tab2Gen === gen) this.tab2Queued = false;
+          return;
+        }
+        if (Date.now() < this.kickPauseUntil) {
+          setTimeout(attempt, this.kickPauseUntil - Date.now() + 500);
           return;
         }
         if (this.ws2) return;
@@ -5491,6 +5512,19 @@
       if (numericTab !== 1 && numericTab !== 2) return false;
       const reason = ev && ev.reason ? String(ev.reason) : "";
       if (/new connection/i.test(reason)) {
+        // Anti-loop: rapid mutual kicks pause all reconnects briefly so the
+        // cycle can't spin forever (and the chat stays readable).
+        this.kickCount = (this.kickCount || 0) + 1;
+        if (Date.now() - (this.kickWindowStart || 0) > 30000) {
+          this.kickWindowStart = Date.now();
+          this.kickCount = 1;
+        }
+        if (this.kickCount >= 3) {
+          this.kickPauseUntil = Date.now() + 15000;
+          this.kickCount = 0;
+          Notifications.warn("Drag+", "Kick loop detected - pausing reconnects for 15s.");
+        }
+        console.log("[dragplus] KICKED tab=" + numericTab + " reason=" + reason + " tab1Login=" + (Account.loginStringForTab1() ? Account.loginStringForTab1().slice(0, 24) + "..." : "guest") + " tokenAge=" + Math.round((Date.now() - (1 === Account.tab1Slot() ? Account.gameTokenAt1 : Account.gameTokenAt2)) / 1000) + "s");
         Notifications.warn("Drag+", "Tab " + numericTab + " was replaced by another connection from this IP (new 3rb.io rule)");
         if (2 === numericTab) {
           this.tab2GuestKicks = (this.tab2GuestKicks || 0) + 1;
@@ -5522,10 +5556,11 @@
       Notifications.alert("Drag+", "Tab " + numericTab + " disconnected");
       console.log("Websocket " + numericTab + " closed" + (reason ? " (" + reason + ")" : ""));
       if (1 === numericTab) {
+        const delay = Date.now() < this.kickPauseUntil ? this.kickPauseUntil - Date.now() + 500 : 1000;
         setTimeout(() => {
           if (this.intentionalDisconnect || !this.ip || this.ws) return;
           this.startTab1(6000);
-        }, 1000);
+        }, delay);
       } else {
         this.retryTab2Later();
       }
