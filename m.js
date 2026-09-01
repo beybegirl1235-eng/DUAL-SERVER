@@ -6133,6 +6133,12 @@
       // loop after every restart.
       const str = 1 === Number(ahn) ? Account.loginStringForTab1() : "";
       console.log("Drag+ Login packet (tab " + ahn + "): " + (str ? (str.length > 24 ? str.slice(0, 24) + "..." : str) : "guest"));
+      try {
+        const slot = Account.tab1Slot();
+        const age = Account.gameTokenOf(slot);
+        const at = 1 === slot ? Account.gameTokenAt1 : Account.gameTokenAt2;
+        Notifications.command("Drag+", "Tab " + ahn + " login sent: " + (str ? ("account " + (str.split("|")[0] || "").slice(0, 8) + " (token age " + Math.round((Date.now() - at) / 1000) + "s)") : "guest"));
+      } catch (e) {}
       if (!str) {
         const px = new Uint8Array([255, 0, 0]);
         WsConnection.send(px, ahn);
