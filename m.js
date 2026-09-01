@@ -5235,17 +5235,21 @@
       // for the token, then fall back after fallbackMs so play is never
       // blocked forever.
       const gen = this.tab2Gen;
+      const slot = Account.tab1Slot();
+      const live = Account.uuid && "logout" !== Account.uuid;
+      const entry = live ? (1 === slot ? Account.slot1 : Account.slot2) : null;
+      const tokenOk = () => !!Account.gameTokenOf(slot);
       const tryConnect = () => {
         if (this.intentionalDisconnect || !this.ip || this.tab2Gen !== gen || this.ws) return;
-        if (Account.slot1 && Account.slot1.uuid && !Account.gameToken1) {
-          Account.fetchSlotToken(1);
+        if (entry && entry.uuid && !tokenOk()) {
+          Account.fetchSlotToken(slot);
           setTimeout(tryConnect, 500);
           return;
         }
         this.createSocket(1);
       };
-      if (Account.slot1 && Account.slot1.uuid && !Account.gameToken1) {
-        Account.fetchSlotToken(1);
+      if (entry && entry.uuid && !tokenOk()) {
+        Account.fetchSlotToken(slot);
         setTimeout(tryConnect, 500);
         setTimeout(() => {
           if (!this.ws && !this.intentionalDisconnect && this.tab2Gen === gen) {
@@ -5258,13 +5262,13 @@
       }
     }
     static ["queueTab2"]() {
-      // The 2026 game server now kicks every other connection from the same
-      // IP ("New connection from this browser") unless the existing
-      // connections are authenticated accounts. Tab 2 therefore never opens
-      // until Tab 1 has finished its full handshake AND carries a valid
-      // account game token, so the two sockets can never kick each other
-      // in a loop. If no account is logged in yet, keep retrying so Tab 2
-      // connects as soon as the user logs in.
+      // The 2026 game server kicks every non-account connection from the
+      // same IP when a new connection arrives. Tab 2 therefore opens only
+      // after Tab 1 is fully authenticated with the LIVE session account
+      // (its token can always be refreshed), and Tab 2 itself stays a
+      // guest. That way the two sockets can never kick each other: Tab 1
+      // is exempt (account), and Tab 2 only gets replaced when Tab 1
+      // reconnects - after which it reconnects and respawns automatically.
       if (this.tab2Queued || this.ws2) return;
       this.tab2Queued = true;
       this.tab2WarnedGuest = false;
@@ -5279,7 +5283,7 @@
           setTimeout(attempt, 600);
           return;
         }
-        if (!Account.loginStringFor(1)) {
+        if (!Account.uuid || "logout" === Account.uuid || !Account.loginStringForTab1()) {
           if (!this.tab2WarnedGuest) {
             this.tab2WarnedGuest = true;
             Notifications.warn("Drag+", "3rb.io now blocks two guest tabs from the same IP. Log in with an account to enable Tab 2.");
@@ -5287,13 +5291,8 @@
           setTimeout(attempt, 3000);
           return;
         }
-        if (!Account.gameToken1) {
-          Account.fetchSlotToken(1);
-          setTimeout(attempt, 700);
-          return;
-        }
-        if (Account.slot2 && Account.slot2.uuid && !Account.gameToken2) {
-          Account.fetchSlotToken(2);
+        if (!Account.gameTokenOf(Account.tab1Slot())) {
+          Account.fetchSlotToken(Account.tab1Slot());
           setTimeout(attempt, 700);
           return;
         }
@@ -5304,10 +5303,6 @@
     static ["retryTab2Later"]() {
       this.tab2Queued = false;
       if (this.intentionalDisconnect || !this.ip) return;
-      if (!Account.loginStringFor(2) && 3 <= (this.tab2GuestKicks || 0)) {
-        Notifications.warn("Drag+", "Tab 2 keeps getting kicked as guest - log in with a second account to keep Tab 2 alive.");
-        return;
-      }
       this.queueTab2();
     }
     static ["createSocket"](slot) {
@@ -5498,11 +5493,20 @@
         Notifications.warn("Drag+", "Tab " + numericTab + " was replaced by another connection from this IP (new 3rb.io rule)");
         if (2 === numericTab) {
           this.tab2GuestKicks = (this.tab2GuestKicks || 0) + 1;
-        } else if (Account.slot1 && 240000 < Date.now() - Account.gameTokenAt1) {
-          // Tab 1 was kicked while carrying a stale token: drop it so the
-          // reconnect waits for a fresh one instead of looping as a guest.
-          Account.gameToken1 = null;
-          Account.gameTokenAt1 = 0;
+        } else {
+          const slot = Account.tab1Slot();
+          const at = 1 === slot ? Account.gameTokenAt1 : Account.gameTokenAt2;
+          if (Account.slot1 && 240000 < Date.now() - at) {
+            // Tab 1 was kicked while carrying a stale token: drop it so the
+            // reconnect waits for a fresh one instead of looping as a guest.
+            if (1 === slot) {
+              Account.gameToken1 = null;
+              Account.gameTokenAt1 = 0;
+            } else {
+              Account.gameToken2 = null;
+              Account.gameTokenAt2 = 0;
+            }
+          }
         }
       }
       if (numericTab === 1) {
@@ -6121,14 +6125,12 @@
     }
     static ["handshake1"](ahn) {
       // Login packet: [255] + UTF-16LE(string) + zero terminator (00 00).
-      // Guest (no account) sends an empty string -> [255, 0, 0]. A logged-in
-      // account sends [255, unicode(uuid|gameToken), 0, 0].
-      // Each tab carries its OWN account: the game server allows a single
-      // connection per account (concurrent-login protection) and, since the
-      // last update, kicks every second guest connection from the same IP
-      // ("New connection from this browser"). Tab 1 uses slot 1, Tab 2 uses
-      // slot 2 (falling back to guest).
-      const str = 1 === Number(ahn) ? Account.loginStringFor(1) : Account.loginStringFor(2);
+      // Tab 1 carries the live session account ("uuid|gameToken") so it can
+      // never be kicked by another connection from this IP. Tab 2 is ALWAYS
+      // a guest: a second account's tokens get revoked as soon as its
+      // session ends, so a stale token there would only recreate the kick
+      // loop after every restart.
+      const str = 1 === Number(ahn) ? Account.loginStringForTab1() : "";
       console.log("Drag+ Login packet (tab " + ahn + "): " + (str ? (str.length > 24 ? str.slice(0, 24) + "..." : str) : "guest"));
       if (!str) {
         const px = new Uint8Array([255, 0, 0]);
@@ -6147,7 +6149,7 @@
     static ["resendLogin"]() {
       [1, 2].forEach((tab) => {
         if ((1 === tab && WsConnection.connected) || (2 === tab && WsConnection.connected2)) {
-          if (!Account.tokenFreshEnough(tab)) {
+          if (1 === tab && !Account.tokenFreshEnough(Account.tab1Slot())) {
             return;
           }
           this.handshake1(tab);
@@ -6443,16 +6445,13 @@
       if (1 === slot) {
         this.slot1 = entry;
         this.writeSlot("dragplus_account_1", entry);
+        this.gameToken1 = null;
+        this.gameTokenAt1 = 0;
       } else {
         this.slot2 = entry;
         this.writeSlot("dragplus_account_2", entry);
-        if (entry.gameToken && Date.now() - entry.gameTokenAt < 43200000) {
-          this.gameToken2 = entry.gameToken;
-          this.gameTokenAt2 = entry.gameTokenAt;
-        } else {
-          this.gameToken2 = null;
-          this.gameTokenAt2 = 0;
-        }
+        this.gameToken2 = null;
+        this.gameTokenAt2 = 0;
       }
       this.fetchSlotToken(slot);
       // The access_token cookie can land a moment after the popup callback
@@ -6481,14 +6480,30 @@
     }
     static ["startTokenLoop"]() {
       if (this._tokenLoop) return;
-      const tick = () => {
+      const tick = (first) => {
+        if (first && this.uuid && "logout" !== this.uuid) {
+          // On page load, force a fresh token for the live session account
+          // even if a saved one looks recent - the saved one may have been
+          // revoked by a later login on the other account.
+          const slot = this.tab1Slot();
+          const entry = 1 === slot ? this.slot1 : this.slot2;
+          if (entry && entry.uuid) {
+            if (1 === slot) {
+              this.gameToken1 = null;
+              this.gameTokenAt1 = 0;
+            } else {
+              this.gameToken2 = null;
+              this.gameTokenAt2 = 0;
+            }
+          }
+        }
         this.fetchSlotToken(1);
         this.fetchSlotToken(2);
         this.warnStaleSlot(1);
         this.warnStaleSlot(2);
       };
-      tick();
-      this._tokenLoop = setInterval(tick, 180000);
+      tick(true);
+      this._tokenLoop = setInterval(() => tick(false), 180000);
     }
     static ["warnStaleSlot"](slot) {
       const entry = 1 === slot ? this.slot1 : this.slot2;
@@ -6571,13 +6586,38 @@
       if (this.slot1 && this.slot1.uuid === this.slot2.uuid) return "";
       return this.gameToken2 ? this.slot2.uuid + "|" + this.gameToken2 : this.slot2.uuid;
     }
+    static ["tab1Slot"]() {
+      // Tab 1 must carry the account that is CURRENTLY the browser session:
+      // logging into a second account ends the first account's session (the
+      // game's "signed in on another device" rule), which also revokes its
+      // game tokens. Only the live session account can always be refreshed.
+      if (this.uuid && "logout" !== this.uuid) {
+        if (this.slot1 && this.slot1.uuid === this.uuid) return 1;
+        if (this.slot2 && this.slot2.uuid === this.uuid) return 2;
+      }
+      return 1;
+    }
+    static ["gameTokenOf"](slot) {
+      return 1 === slot ? this.gameToken1 : this.gameToken2;
+    }
+    static ["loginStringForTab1"]() {
+      const slot = this.tab1Slot();
+      const entry = 1 === slot ? this.slot1 : this.slot2;
+      if (!entry || !entry.uuid) return "";
+      const tk = this.gameTokenOf(slot);
+      return tk ? entry.uuid + "|" + tk : entry.uuid;
+    }
     static ["tokenFreshEnough"](slot) {
       // Re-sending an old token could make the server re-validate a healthy
       // connection and downgrade it to a guest. Only re-send the Login
-      // packet when the token is fresh (or the tab is a plain guest).
+      // packet when the token is fresh (or the tab is a plain guest with no
+      // saved account at all).
       const tk = 1 === slot ? this.gameToken1 : this.gameToken2;
       const at = 1 === slot ? this.gameTokenAt1 : this.gameTokenAt2;
-      if (!tk) return true;
+      if (!tk) {
+        const entry = 1 === slot ? this.slot1 : this.slot2;
+        return !(entry && entry.uuid);
+      }
       return Date.now() - at < 270000;
     }
     static ["slots"]() {
