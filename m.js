@@ -5134,6 +5134,7 @@
         status: () => this.statusSnapshot(),
         kill: () => this.recycleActiveCell(),
         accounts: () => Account.slots(),
+        dumpTokens: () => Account.dumpTokens(),
         setAccount: (slot, uuid, accessToken) => Account.setSlot(slot, uuid, accessToken),
         clearAccounts: () => Account.clearSlots(),
       };
@@ -6350,6 +6351,7 @@
   }
   class Account {
     static ["init"]() {
+      console.log("[dragplus] Drag+ multibox v12 loaded (session-account model)");
       this.uuid = localStorage.getItem("active_session_id") || "";
       this.nick = localStorage.getItem("active_session_nick") || "";
       this.gameToken = null;
@@ -6395,6 +6397,7 @@
       this.captureCurrentSession();
       this.startTokenLoop();
       this.updateUI();
+      Notifications.command("Drag+", "v12 loaded (session-account model)");
     }
     static ["readCookie"](name) {
       const parts = ("; " + document.cookie).split("; " + name + "=");
@@ -6623,9 +6626,18 @@
     static ["slots"]() {
       const age = (tk, at) => (tk && at ? Math.round((Date.now() - at) / 1000) + "s" : "none");
       return {
+        version: "v12",
         authKeys: this.lastAuthKeys || "none",
         tab1: this.slot1 ? { uuid: this.slot1.uuid, nick: this.slot1.nick, hasAccessToken: !!this.slot1.accessToken, gameToken: !!this.gameToken1, gameTokenAge: age(this.gameToken1, this.gameTokenAt1), fetchFails: this._slotFetchFail ? this._slotFetchFail[1] || 0 : 0 } : null,
         tab2: this.slot2 ? { uuid: this.slot2.uuid, nick: this.slot2.nick, hasAccessToken: !!this.slot2.accessToken, gameToken: !!this.gameToken2, gameTokenAge: age(this.gameToken2, this.gameTokenAt2), fetchFails: this._slotFetchFail ? this._slotFetchFail[2] || 0 : 0 } : null,
+      };
+    }
+    static ["dumpTokens"]() {
+      return {
+        uuid1: this.slot1 ? this.slot1.uuid : null,
+        token1: this.gameToken1 || null,
+        uuid2: this.slot2 ? this.slot2.uuid : null,
+        token2: this.gameToken2 || null,
       };
     }
     static ["setSlot"](slot, uuid, accessToken) {
