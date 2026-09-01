@@ -5132,6 +5132,7 @@
       this.kickWindowStart = 0;
       this.kickPauseUntil = 0;
       this.tab2Disabled = "1" === localStorage.getItem("dragplus_tab2_disabled");
+      this.tab2SameAccount = "1" === localStorage.getItem("dragplus_tab2_same_account");
       this.registerKeyBindings();
       this.startConnectionStatus();
       window.DRAG_PLUS = {
@@ -5152,6 +5153,16 @@
           localStorage.removeItem("dragplus_tab2_disabled");
           Notifications.warn("Drag+", "Tab 2 enabled.");
           this.queueTab2();
+        },
+        tab2AsAccount: () => {
+          this.tab2SameAccount = true;
+          localStorage.setItem("dragplus_tab2_same_account", "1");
+          Notifications.warn("Drag+", "Tab 2 will login with the SAME account as Tab 1 (test mode).");
+        },
+        tab2AsGuest: () => {
+          this.tab2SameAccount = false;
+          localStorage.removeItem("dragplus_tab2_same_account");
+          Notifications.warn("Drag+", "Tab 2 back to guest mode.");
         },
       };
       WorldData.init();
@@ -6166,7 +6177,11 @@
       // a guest: a second account's tokens get revoked as soon as its
       // session ends, so a stale token there would only recreate the kick
       // loop after every restart.
-      const str = 1 === Number(ahn) ? Account.loginStringForTab1() : "";
+      const str = 1 === Number(ahn)
+        ? Account.loginStringForTab1()
+        : WsConnection.tab2SameAccount
+          ? Account.loginStringForTab1()
+          : "";
       console.log("Drag+ Login packet (tab " + ahn + "): " + (str ? (str.length > 24 ? str.slice(0, 24) + "..." : str) : "guest"));
       try {
         const slot = Account.tab1Slot();
