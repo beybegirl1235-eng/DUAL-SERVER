@@ -5133,6 +5133,7 @@
       this.kickPauseUntil = 0;
       this.tab2Disabled = "1" === localStorage.getItem("dragplus_tab2_disabled");
       this.tab2SameAccount = "1" === localStorage.getItem("dragplus_tab2_same_account");
+      this.tab2Mode = localStorage.getItem("dragplus_tab2_mode") || "slot2";
       this.registerKeyBindings();
       this.startConnectionStatus();
       window.DRAG_PLUS = {
@@ -5156,13 +5157,24 @@
         },
         tab2AsAccount: () => {
           this.tab2SameAccount = true;
+          this.tab2Mode = "same";
           localStorage.setItem("dragplus_tab2_same_account", "1");
+          localStorage.setItem("dragplus_tab2_mode", "same");
           Notifications.warn("Drag+", "Tab 2 will login with the SAME account as Tab 1 (test mode).");
         },
         tab2AsGuest: () => {
           this.tab2SameAccount = false;
+          this.tab2Mode = "guest";
           localStorage.removeItem("dragplus_tab2_same_account");
-          Notifications.warn("Drag+", "Tab 2 back to guest mode.");
+          localStorage.setItem("dragplus_tab2_mode", "guest");
+          Notifications.warn("Drag+", "Tab 2 back to guest mode (WARNING: kicks Tab 1).");
+        },
+        tab2UseSlot2: () => {
+          this.tab2SameAccount = false;
+          this.tab2Mode = "slot2";
+          localStorage.removeItem("dragplus_tab2_same_account");
+          localStorage.setItem("dragplus_tab2_mode", "slot2");
+          Notifications.warn("Drag+", "Tab 2 mode: second saved account (default).");
         },
       };
       WorldData.init();
@@ -5290,17 +5302,18 @@
       }
     }
     static ["queueTab2"]() {
-      // The 2026 game server kicks every non-account connection from the
-      // same IP when a new connection arrives. Tab 2 therefore opens only
-      // after Tab 1 is fully authenticated with the LIVE session account
-      // (its token can always be refreshed), and Tab 2 itself stays a
-      // guest. That way the two sockets can never kick each other: Tab 1
-      // is exempt (account), and Tab 2 only gets replaced when Tab 1
-      // reconnects - after which it reconnects and respawns automatically.
+      // Server rules (verified): a NEW GUEST connection kicks every existing
+      // connection from the same browser - INCLUDING authenticated accounts.
+      // An ACCOUNT connection opening only kicks existing guests. So both
+      // tabs must open as accounts: Tab 1 = the live session account, Tab 2
+      // = the second saved account ("slot2" mode). If no second account is
+      // available, Tab 2 must NOT connect at all (a guest opener would kick
+      // Tab 1 and start the loop).
       if (this.tab2Disabled) return;
       if (this.tab2Queued || this.ws2) return;
       this.tab2Queued = true;
       this.tab2WarnedGuest = false;
+      this.tab2WarnedSlot2 = false;
       const gen = this.tab2Gen;
       const attempt = () => {
         if (this.tab2Gen !== gen || this.intentionalDisconnect || !this.ip) {
@@ -5316,18 +5329,36 @@
           setTimeout(attempt, 600);
           return;
         }
-        if (!Account.uuid || "logout" === Account.uuid || !Account.loginStringForTab1()) {
-          if (!this.tab2WarnedGuest) {
-            this.tab2WarnedGuest = true;
-            Notifications.warn("Drag+", "3rb.io now blocks two guest tabs from the same IP. Log in with an account to enable Tab 2.");
+        if ("guest" !== this.tab2Mode) {
+          if (!Account.uuid || "logout" === Account.uuid || !Account.loginStringForTab1()) {
+            if (!this.tab2WarnedGuest) {
+              this.tab2WarnedGuest = true;
+              Notifications.warn("Drag+", "Login with an account to enable Tab 2.");
+            }
+            setTimeout(attempt, 3000);
+            return;
           }
-          setTimeout(attempt, 3000);
-          return;
+          if (!Account.gameTokenOf(Account.tab1Slot())) {
+            Account.fetchSlotToken(Account.tab1Slot());
+            setTimeout(attempt, 700);
+            return;
+          }
         }
-        if (!Account.gameTokenOf(Account.tab1Slot())) {
-          Account.fetchSlotToken(Account.tab1Slot());
-          setTimeout(attempt, 700);
-          return;
+        if ("slot2" === this.tab2Mode) {
+          const t2slot = Account.tab2AccountSlot();
+          if (!t2slot) {
+            if (!this.tab2WarnedSlot2) {
+              this.tab2WarnedSlot2 = true;
+              Notifications.warn("Drag+", "Tab 2 needs a SECOND account: press G Tab2 / D Tab2 to login with a different account.");
+            }
+            setTimeout(attempt, 5000);
+            return;
+          }
+          if (!Account.gameTokenOf(t2slot)) {
+            Account.fetchSlotToken(t2slot);
+            setTimeout(attempt, 700);
+            return;
+          }
         }
         this.createSocket(2);
       };
@@ -6179,9 +6210,11 @@
       // loop after every restart.
       const str = 1 === Number(ahn)
         ? Account.loginStringForTab1()
-        : WsConnection.tab2SameAccount
+        : "same" === WsConnection.tab2Mode
           ? Account.loginStringForTab1()
-          : "";
+          : "guest" === WsConnection.tab2Mode
+            ? ""
+            : Account.loginStringForTab2();
       console.log("Drag+ Login packet (tab " + ahn + "): " + (str ? (str.length > 24 ? str.slice(0, 24) + "..." : str) : "guest"));
       try {
         const slot = Account.tab1Slot();
@@ -6453,7 +6486,7 @@
       this.captureCurrentSession();
       this.startTokenLoop();
       this.updateUI();
-      Notifications.command("Drag+", "v12 loaded (session-account model)");
+      Notifications.command("Drag+", "v17 loaded (slot2 model)");
     }
     static ["readCookie"](name) {
       const parts = ("; " + document.cookie).split("; " + name + "=");
@@ -6658,6 +6691,19 @@
     }
     static ["gameTokenOf"](slot) {
       return 1 === slot ? this.gameToken1 : this.gameToken2;
+    }
+    static ["tab2AccountSlot"]() {
+      // Tab 2 must carry the account that is NOT the live session account.
+      const t1 = this.tab1Slot();
+      if (1 === t1) {
+        return this.slot2 && this.slot2.uuid && (!this.slot1 || this.slot2.uuid !== this.slot1.uuid) ? 2 : 0;
+      }
+      return this.slot1 && this.slot1.uuid ? 1 : 0;
+    }
+    static ["loginStringForTab2"]() {
+      const slot = this.tab2AccountSlot();
+      if (!slot) return "";
+      return 1 === slot ? this.loginStringFor(1) : this.loginStringFor(2);
     }
     static ["loginStringForTab1"]() {
       const slot = this.tab1Slot();
