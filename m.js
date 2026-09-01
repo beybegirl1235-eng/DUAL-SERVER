@@ -5128,54 +5128,14 @@
       this.tab2Queued = false;
       this.tab2GuestKicks = 0;
       this.tab2Gen = (this.tab2Gen || 0) + 1;
-      this.kickCount = 0;
-      this.kickWindowStart = 0;
-      this.kickPauseUntil = 0;
-      this.tab2Disabled = "1" === localStorage.getItem("dragplus_tab2_disabled");
-      this.tab2SameAccount = "1" === localStorage.getItem("dragplus_tab2_same_account");
-      this.tab2Mode = localStorage.getItem("dragplus_tab2_mode") || "slot2";
       this.registerKeyBindings();
       this.startConnectionStatus();
       window.DRAG_PLUS = {
         status: () => this.statusSnapshot(),
         kill: () => this.recycleActiveCell(),
         accounts: () => Account.slots(),
-        dumpTokens: () => Account.dumpTokens(),
         setAccount: (slot, uuid, accessToken) => Account.setSlot(slot, uuid, accessToken),
         clearAccounts: () => Account.clearSlots(),
-        disableTab2: () => {
-          this.tab2Disabled = true;
-          localStorage.setItem("dragplus_tab2_disabled", "1");
-          try { this.closeTab(2); } catch (e) {}
-          Notifications.warn("Drag+", "Tab 2 disabled (solo test mode).");
-        },
-        enableTab2: () => {
-          this.tab2Disabled = false;
-          localStorage.removeItem("dragplus_tab2_disabled");
-          Notifications.warn("Drag+", "Tab 2 enabled.");
-          this.queueTab2();
-        },
-        tab2AsAccount: () => {
-          this.tab2SameAccount = true;
-          this.tab2Mode = "same";
-          localStorage.setItem("dragplus_tab2_same_account", "1");
-          localStorage.setItem("dragplus_tab2_mode", "same");
-          Notifications.warn("Drag+", "Tab 2 will login with the SAME account as Tab 1 (test mode).");
-        },
-        tab2AsGuest: () => {
-          this.tab2SameAccount = false;
-          this.tab2Mode = "guest";
-          localStorage.removeItem("dragplus_tab2_same_account");
-          localStorage.setItem("dragplus_tab2_mode", "guest");
-          Notifications.warn("Drag+", "Tab 2 back to guest mode (WARNING: kicks Tab 1).");
-        },
-        tab2UseSlot2: () => {
-          this.tab2SameAccount = false;
-          this.tab2Mode = "slot2";
-          localStorage.removeItem("dragplus_tab2_same_account");
-          localStorage.setItem("dragplus_tab2_mode", "slot2");
-          Notifications.warn("Drag+", "Tab 2 mode: second saved account (default).");
-        },
       };
       WorldData.init();
     }
@@ -5264,64 +5224,25 @@
         this.tab2Queued = false;
         this.tab2GuestKicks = 0;
         this.tab2Gen = (this.tab2Gen || 0) + 1;
+        this.createSocket(1);
         console.log("Connecting to: " + hy + " (Tab 1 first, Tab 2 follows after Tab 1 auth)");
-        this.startTab1(8000);
-      }
-    }
-    static ["startTab1"](fallbackMs = 8000) {
-      // Tab 1 must NOT open while an account is saved but its game token is
-      // still missing: a login without a valid token is treated as a guest
-      // by the server, and the next same-IP connection would kick it. Wait
-      // for the token, then fall back after fallbackMs so play is never
-      // blocked forever.
-      const gen = this.tab2Gen;
-      const slot = Account.tab1Slot();
-      const live = Account.uuid && "logout" !== Account.uuid;
-      const entry = live ? (1 === slot ? Account.slot1 : Account.slot2) : null;
-      const tokenOk = () => !!Account.gameTokenOf(slot);
-      const tryConnect = () => {
-        if (this.intentionalDisconnect || !this.ip || this.tab2Gen !== gen || this.ws) return;
-        if (entry && entry.uuid && !tokenOk()) {
-          Account.fetchSlotToken(slot);
-          setTimeout(tryConnect, 500);
-          return;
-        }
-        this.createSocket(1);
-      };
-      if (entry && entry.uuid && !tokenOk()) {
-        Account.fetchSlotToken(slot);
-        setTimeout(tryConnect, 500);
-        setTimeout(() => {
-          if (!this.ws && !this.intentionalDisconnect && this.tab2Gen === gen) {
-            Notifications.warn("Drag+", "Tab 1 account token unavailable - connecting anyway (login again if the tabs keep kicking each other).");
-            this.createSocket(1);
-          }
-        }, fallbackMs);
-      } else {
-        this.createSocket(1);
       }
     }
     static ["queueTab2"]() {
-      // Server rules (verified): a NEW GUEST connection kicks every existing
-      // connection from the same browser - INCLUDING authenticated accounts.
-      // An ACCOUNT connection opening only kicks existing guests. So both
-      // tabs must open as accounts: Tab 1 = the live session account, Tab 2
-      // = the second saved account ("slot2" mode). If no second account is
-      // available, Tab 2 must NOT connect at all (a guest opener would kick
-      // Tab 1 and start the loop).
-      if (this.tab2Disabled) return;
+      // The 2026 game server now kicks every other connection from the same
+      // IP ("New connection from this browser") unless the existing
+      // connections are authenticated accounts. Tab 2 therefore never opens
+      // until Tab 1 has finished its full handshake AND carries a valid
+      // account game token, so the two sockets can never kick each other
+      // in a loop. If no account is logged in yet, keep retrying so Tab 2
+      // connects as soon as the user logs in.
       if (this.tab2Queued || this.ws2) return;
       this.tab2Queued = true;
       this.tab2WarnedGuest = false;
-      this.tab2WarnedSlot2 = false;
       const gen = this.tab2Gen;
       const attempt = () => {
         if (this.tab2Gen !== gen || this.intentionalDisconnect || !this.ip) {
           if (this.tab2Gen === gen) this.tab2Queued = false;
-          return;
-        }
-        if (Date.now() < this.kickPauseUntil) {
-          setTimeout(attempt, this.kickPauseUntil - Date.now() + 500);
           return;
         }
         if (this.ws2) return;
@@ -5329,36 +5250,18 @@
           setTimeout(attempt, 600);
           return;
         }
-        if ("guest" !== this.tab2Mode) {
-          if (!Account.uuid || "logout" === Account.uuid || !Account.loginStringForTab1()) {
-            if (!this.tab2WarnedGuest) {
-              this.tab2WarnedGuest = true;
-              Notifications.warn("Drag+", "Login with an account to enable Tab 2.");
-            }
-            setTimeout(attempt, 3000);
-            return;
+        if (!Account.loginStringFor(1)) {
+          if (!this.tab2WarnedGuest) {
+            this.tab2WarnedGuest = true;
+            Notifications.warn("Drag+", "3rb.io now blocks two guest tabs from the same IP. Log in with an account to enable Tab 2.");
           }
-          if (!Account.gameTokenOf(Account.tab1Slot())) {
-            Account.fetchSlotToken(Account.tab1Slot());
-            setTimeout(attempt, 700);
-            return;
-          }
+          setTimeout(attempt, 3000);
+          return;
         }
-        if ("slot2" === this.tab2Mode) {
-          const t2slot = Account.tab2AccountSlot();
-          if (!t2slot) {
-            if (!this.tab2WarnedSlot2) {
-              this.tab2WarnedSlot2 = true;
-              Notifications.warn("Drag+", "Tab 2 needs a SECOND account: press G Tab2 / D Tab2 to login with a different account.");
-            }
-            setTimeout(attempt, 5000);
-            return;
-          }
-          if (!Account.gameTokenOf(t2slot)) {
-            Account.fetchSlotToken(t2slot);
-            setTimeout(attempt, 700);
-            return;
-          }
+        if (!Account.gameToken1) {
+          Account.fetchSlotToken(1);
+          setTimeout(attempt, 700);
+          return;
         }
         this.createSocket(2);
       };
@@ -5367,6 +5270,10 @@
     static ["retryTab2Later"]() {
       this.tab2Queued = false;
       if (this.intentionalDisconnect || !this.ip) return;
+      if (!Account.loginStringFor(2) && 3 <= (this.tab2GuestKicks || 0)) {
+        Notifications.warn("Drag+", "Tab 2 keeps getting kicked as guest - log in with a second account to keep Tab 2 alive.");
+        return;
+      }
       this.queueTab2();
     }
     static ["createSocket"](slot) {
@@ -5554,36 +5461,9 @@
       if (numericTab !== 1 && numericTab !== 2) return false;
       const reason = ev && ev.reason ? String(ev.reason) : "";
       if (/new connection/i.test(reason)) {
-        // Anti-loop: rapid mutual kicks pause all reconnects briefly so the
-        // cycle can't spin forever (and the chat stays readable).
-        this.kickCount = (this.kickCount || 0) + 1;
-        if (Date.now() - (this.kickWindowStart || 0) > 30000) {
-          this.kickWindowStart = Date.now();
-          this.kickCount = 1;
-        }
-        if (this.kickCount >= 3) {
-          this.kickPauseUntil = Date.now() + 15000;
-          this.kickCount = 0;
-          Notifications.warn("Drag+", "Kick loop detected - pausing reconnects for 15s.");
-        }
-        console.log("[dragplus] KICKED tab=" + numericTab + " reason=" + reason + " tab1Login=" + (Account.loginStringForTab1() ? Account.loginStringForTab1().slice(0, 24) + "..." : "guest") + " tokenAge=" + Math.round((Date.now() - (1 === Account.tab1Slot() ? Account.gameTokenAt1 : Account.gameTokenAt2)) / 1000) + "s");
         Notifications.warn("Drag+", "Tab " + numericTab + " was replaced by another connection from this IP (new 3rb.io rule)");
         if (2 === numericTab) {
           this.tab2GuestKicks = (this.tab2GuestKicks || 0) + 1;
-        } else {
-          const slot = Account.tab1Slot();
-          const at = 1 === slot ? Account.gameTokenAt1 : Account.gameTokenAt2;
-          if (Account.slot1 && 240000 < Date.now() - at) {
-            // Tab 1 was kicked while carrying a stale token: drop it so the
-            // reconnect waits for a fresh one instead of looping as a guest.
-            if (1 === slot) {
-              Account.gameToken1 = null;
-              Account.gameTokenAt1 = 0;
-            } else {
-              Account.gameToken2 = null;
-              Account.gameTokenAt2 = 0;
-            }
-          }
         }
       }
       if (numericTab === 1) {
@@ -5598,11 +5478,10 @@
       Notifications.alert("Drag+", "Tab " + numericTab + " disconnected");
       console.log("Websocket " + numericTab + " closed" + (reason ? " (" + reason + ")" : ""));
       if (1 === numericTab) {
-        const delay = Date.now() < this.kickPauseUntil ? this.kickPauseUntil - Date.now() + 500 : 1000;
         setTimeout(() => {
           if (this.intentionalDisconnect || !this.ip || this.ws) return;
-          this.startTab1(6000);
-        }, delay);
+          this.createSocket(1);
+        }, 1000);
       } else {
         this.retryTab2Later();
       }
@@ -6203,25 +6082,15 @@
     }
     static ["handshake1"](ahn) {
       // Login packet: [255] + UTF-16LE(string) + zero terminator (00 00).
-      // Tab 1 carries the live session account ("uuid|gameToken") so it can
-      // never be kicked by another connection from this IP. Tab 2 is ALWAYS
-      // a guest: a second account's tokens get revoked as soon as its
-      // session ends, so a stale token there would only recreate the kick
-      // loop after every restart.
-      const str = 1 === Number(ahn)
-        ? Account.loginStringForTab1()
-        : "same" === WsConnection.tab2Mode
-          ? Account.loginStringForTab1()
-          : "guest" === WsConnection.tab2Mode
-            ? ""
-            : Account.loginStringForTab2();
+      // Guest (no account) sends an empty string -> [255, 0, 0]. A logged-in
+      // account sends [255, unicode(uuid|gameToken), 0, 0].
+      // Each tab carries its OWN account: the game server allows a single
+      // connection per account (concurrent-login protection) and, since the
+      // last update, kicks every second guest connection from the same IP
+      // ("New connection from this browser"). Tab 1 uses slot 1, Tab 2 uses
+      // slot 2 (falling back to guest).
+      const str = 1 === Number(ahn) ? Account.loginStringFor(1) : Account.loginStringFor(2);
       console.log("Drag+ Login packet (tab " + ahn + "): " + (str ? (str.length > 24 ? str.slice(0, 24) + "..." : str) : "guest"));
-      try {
-        const slot = Account.tab1Slot();
-        const age = Account.gameTokenOf(slot);
-        const at = 1 === slot ? Account.gameTokenAt1 : Account.gameTokenAt2;
-        Notifications.command("Drag+", "Tab " + ahn + " login sent: " + (str ? ("account " + (str.split("|")[0] || "").slice(0, 8) + " (token age " + Math.round((Date.now() - at) / 1000) + "s)") : "guest"));
-      } catch (e) {}
       if (!str) {
         const px = new Uint8Array([255, 0, 0]);
         WsConnection.send(px, ahn);
@@ -6239,9 +6108,6 @@
     static ["resendLogin"]() {
       [1, 2].forEach((tab) => {
         if ((1 === tab && WsConnection.connected) || (2 === tab && WsConnection.connected2)) {
-          if (1 === tab && !Account.tokenFreshEnough(Account.tab1Slot())) {
-            return;
-          }
           this.handshake1(tab);
         }
       });
@@ -6440,7 +6306,6 @@
   }
   class Account {
     static ["init"]() {
-      console.log("[dragplus] Drag+ multibox v12 loaded (session-account model)");
       this.uuid = localStorage.getItem("active_session_id") || "";
       this.nick = localStorage.getItem("active_session_nick") || "";
       this.gameToken = null;
@@ -6458,16 +6323,10 @@
       this._tokenLoop = null;
       this.slot1 = this.readSlot("dragplus_account_1");
       this.slot2 = this.readSlot("dragplus_account_2");
-      // Restore saved game tokens so a page refresh does NOT require logging
-      // in again. Tokens older than 12h are ignored (too likely expired).
-      const restore = (slot) => {
-        if (!slot || !slot.gameToken || !slot.gameTokenAt) return null;
-        return Date.now() - slot.gameTokenAt < 43200000 ? slot.gameToken : null;
-      };
-      this.gameToken1 = restore(this.slot1);
-      this.gameTokenAt1 = this.gameToken1 ? this.slot1.gameTokenAt : 0;
-      this.gameToken2 = restore(this.slot2);
-      this.gameTokenAt2 = this.gameToken2 ? this.slot2.gameTokenAt : 0;
+      this.gameToken1 = null;
+      this.gameTokenAt1 = 0;
+      this.gameToken2 = null;
+      this.gameTokenAt2 = 0;
       window.authResponse = (res) => {
         try {
           this.onAuthResponse(res);
@@ -6486,7 +6345,6 @@
       this.captureCurrentSession();
       this.startTokenLoop();
       this.updateUI();
-      Notifications.command("Drag+", "v17 loaded (slot2 model)");
     }
     static ["readCookie"](name) {
       const parts = ("; " + document.cookie).split("; " + name + "=");
@@ -6522,23 +6380,11 @@
       } else {
         slot = 2;
       }
-      // NEVER clobber an existing slot with an empty entry: the saved game
-      // token and access token must survive page reloads, otherwise every
-      // refresh wipes the tokens and both tabs reconnect as guests and kick
-      // each other. Merge with what was already stored.
-      const prev = 1 === slot ? this.slot1 : this.slot2;
-      const entry = {
-        uuid: uuid,
-        nick: this.nick || (prev && prev.nick) || "",
-        accessToken: this.lastAuthAccessToken || this.readCookie("access_token") || (prev && prev.accessToken) || "",
-        gameToken: prev && prev.gameToken ? prev.gameToken : undefined,
-        gameTokenAt: prev && prev.gameTokenAt ? prev.gameTokenAt : undefined,
-      };
+      const entry = { uuid: uuid, nick: this.nick, accessToken: "" };
+      entry.accessToken = this.lastAuthAccessToken || this.readCookie("access_token") || "";
       if (1 === slot) {
         this.slot1 = entry;
         this.writeSlot("dragplus_account_1", entry);
-        this.gameToken1 = null;
-        this.gameTokenAt1 = 0;
       } else {
         this.slot2 = entry;
         this.writeSlot("dragplus_account_2", entry);
@@ -6572,30 +6418,14 @@
     }
     static ["startTokenLoop"]() {
       if (this._tokenLoop) return;
-      const tick = (first) => {
-        if (first && this.uuid && "logout" !== this.uuid) {
-          // On page load, force a fresh token for the live session account
-          // even if a saved one looks recent - the saved one may have been
-          // revoked by a later login on the other account.
-          const slot = this.tab1Slot();
-          const entry = 1 === slot ? this.slot1 : this.slot2;
-          if (entry && entry.uuid) {
-            if (1 === slot) {
-              this.gameToken1 = null;
-              this.gameTokenAt1 = 0;
-            } else {
-              this.gameToken2 = null;
-              this.gameTokenAt2 = 0;
-            }
-          }
-        }
+      const tick = () => {
         this.fetchSlotToken(1);
         this.fetchSlotToken(2);
         this.warnStaleSlot(1);
         this.warnStaleSlot(2);
       };
-      tick(true);
-      this._tokenLoop = setInterval(() => tick(false), 180000);
+      tick();
+      this._tokenLoop = setInterval(tick, 180000);
     }
     static ["warnStaleSlot"](slot) {
       const entry = 1 === slot ? this.slot1 : this.slot2;
@@ -6642,19 +6472,9 @@
           if (1 === slot) {
             this.gameToken1 = tk;
             this.gameTokenAt1 = Date.now();
-            if (this.slot1) {
-              this.slot1.gameToken = tk;
-              this.slot1.gameTokenAt = Date.now();
-              this.writeSlot("dragplus_account_1", this.slot1);
-            }
           } else {
             this.gameToken2 = tk;
             this.gameTokenAt2 = Date.now();
-            if (this.slot2) {
-              this.slot2.gameToken = tk;
-              this.slot2.gameTokenAt = Date.now();
-              this.writeSlot("dragplus_account_2", this.slot2);
-            }
           }
           Notifications.command("Login", "Game token ready (Tab " + slot + " account)");
           PacketSender.resendLogin();
@@ -6678,68 +6498,10 @@
       if (this.slot1 && this.slot1.uuid === this.slot2.uuid) return "";
       return this.gameToken2 ? this.slot2.uuid + "|" + this.gameToken2 : this.slot2.uuid;
     }
-    static ["tab1Slot"]() {
-      // Tab 1 must carry the account that is CURRENTLY the browser session:
-      // logging into a second account ends the first account's session (the
-      // game's "signed in on another device" rule), which also revokes its
-      // game tokens. Only the live session account can always be refreshed.
-      if (this.uuid && "logout" !== this.uuid) {
-        if (this.slot1 && this.slot1.uuid === this.uuid) return 1;
-        if (this.slot2 && this.slot2.uuid === this.uuid) return 2;
-      }
-      return 1;
-    }
-    static ["gameTokenOf"](slot) {
-      return 1 === slot ? this.gameToken1 : this.gameToken2;
-    }
-    static ["tab2AccountSlot"]() {
-      // Tab 2 must carry the account that is NOT the live session account.
-      const t1 = this.tab1Slot();
-      if (1 === t1) {
-        return this.slot2 && this.slot2.uuid && (!this.slot1 || this.slot2.uuid !== this.slot1.uuid) ? 2 : 0;
-      }
-      return this.slot1 && this.slot1.uuid ? 1 : 0;
-    }
-    static ["loginStringForTab2"]() {
-      const slot = this.tab2AccountSlot();
-      if (!slot) return "";
-      return 1 === slot ? this.loginStringFor(1) : this.loginStringFor(2);
-    }
-    static ["loginStringForTab1"]() {
-      const slot = this.tab1Slot();
-      const entry = 1 === slot ? this.slot1 : this.slot2;
-      if (!entry || !entry.uuid) return "";
-      const tk = this.gameTokenOf(slot);
-      return tk ? entry.uuid + "|" + tk : entry.uuid;
-    }
-    static ["tokenFreshEnough"](slot) {
-      // Re-sending an old token could make the server re-validate a healthy
-      // connection and downgrade it to a guest. Only re-send the Login
-      // packet when the token is fresh (or the tab is a plain guest with no
-      // saved account at all).
-      const tk = 1 === slot ? this.gameToken1 : this.gameToken2;
-      const at = 1 === slot ? this.gameTokenAt1 : this.gameTokenAt2;
-      if (!tk) {
-        const entry = 1 === slot ? this.slot1 : this.slot2;
-        return !(entry && entry.uuid);
-      }
-      return Date.now() - at < 270000;
-    }
     static ["slots"]() {
-      const age = (tk, at) => (tk && at ? Math.round((Date.now() - at) / 1000) + "s" : "none");
       return {
-        version: "v12",
-        authKeys: this.lastAuthKeys || "none",
-        tab1: this.slot1 ? { uuid: this.slot1.uuid, nick: this.slot1.nick, hasAccessToken: !!this.slot1.accessToken, gameToken: !!this.gameToken1, gameTokenAge: age(this.gameToken1, this.gameTokenAt1), fetchFails: this._slotFetchFail ? this._slotFetchFail[1] || 0 : 0 } : null,
-        tab2: this.slot2 ? { uuid: this.slot2.uuid, nick: this.slot2.nick, hasAccessToken: !!this.slot2.accessToken, gameToken: !!this.gameToken2, gameTokenAge: age(this.gameToken2, this.gameTokenAt2), fetchFails: this._slotFetchFail ? this._slotFetchFail[2] || 0 : 0 } : null,
-      };
-    }
-    static ["dumpTokens"]() {
-      return {
-        uuid1: this.slot1 ? this.slot1.uuid : null,
-        token1: this.gameToken1 || null,
-        uuid2: this.slot2 ? this.slot2.uuid : null,
-        token2: this.gameToken2 || null,
+        tab1: this.slot1 ? { uuid: this.slot1.uuid, nick: this.slot1.nick, hasToken: !!this.slot1.accessToken, gameToken: !!this.gameToken1 } : null,
+        tab2: this.slot2 ? { uuid: this.slot2.uuid, nick: this.slot2.nick, hasToken: !!this.slot2.accessToken, gameToken: !!this.gameToken2 } : null,
       };
     }
     static ["setSlot"](slot, uuid, accessToken) {
@@ -6803,11 +6565,6 @@
         Notifications.warn("Login", (e && e.error) || "Login error!");
         return;
       }
-      try {
-        this.lastAuthKeys = Object.keys(e).join(",");
-        console.log("[dragplus] authResponse keys: " + this.lastAuthKeys);
-        console.log("[dragplus] authResponse: " + JSON.stringify(e).slice(0, 500));
-      } catch (err) {}
       this.uuid = e.uuid || "";
       this.nick = e.Name || "";
       if (this.uuid) {
