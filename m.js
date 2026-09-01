@@ -6425,16 +6425,31 @@
       } else {
         slot = 2;
       }
-      const entry = { uuid: uuid, nick: this.nick, accessToken: "" };
-      entry.accessToken = this.lastAuthAccessToken || this.readCookie("access_token") || "";
+      // NEVER clobber an existing slot with an empty entry: the saved game
+      // token and access token must survive page reloads, otherwise every
+      // refresh wipes the tokens and both tabs reconnect as guests and kick
+      // each other. Merge with what was already stored.
+      const prev = 1 === slot ? this.slot1 : this.slot2;
+      const entry = {
+        uuid: uuid,
+        nick: this.nick || (prev && prev.nick) || "",
+        accessToken: this.lastAuthAccessToken || this.readCookie("access_token") || (prev && prev.accessToken) || "",
+        gameToken: prev && prev.gameToken ? prev.gameToken : undefined,
+        gameTokenAt: prev && prev.gameTokenAt ? prev.gameTokenAt : undefined,
+      };
       if (1 === slot) {
         this.slot1 = entry;
         this.writeSlot("dragplus_account_1", entry);
       } else {
         this.slot2 = entry;
         this.writeSlot("dragplus_account_2", entry);
-        this.gameToken2 = null;
-        this.gameTokenAt2 = 0;
+        if (entry.gameToken && Date.now() - entry.gameTokenAt < 43200000) {
+          this.gameToken2 = entry.gameToken;
+          this.gameTokenAt2 = entry.gameTokenAt;
+        } else {
+          this.gameToken2 = null;
+          this.gameTokenAt2 = 0;
+        }
       }
       this.fetchSlotToken(slot);
       // The access_token cookie can land a moment after the popup callback
