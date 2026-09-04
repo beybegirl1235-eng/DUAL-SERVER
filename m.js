@@ -1,12 +1,4 @@
 !(function (window, $, document) {
-  (function loadTurnstile() {
-    if (document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]')) return;
-    var s = document.createElement("script");
-    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
-    s.async = true;
-    s.defer = true;
-    (document.head || document.documentElement).appendChild(s);
-  })();
   const antiDebug = (function () {
     let ka = true;
     return function (hb, dd) {
@@ -5147,6 +5139,13 @@
       };
       WorldData.init();
     }
+    // Each tab needs its OWN reCAPTCHA widget/container. Rendering the same
+    // container twice targets the same single element, so the 2nd render()
+    // silently fails to bind and tab 2's promise never resolves -> handshake2
+    // never completes -> ws2 never sends its auth packet -> server drops it as
+    // idle.
+    // The captcha queue serializes token requests so the standby tab never
+    // renders a third widget while an earlier one is still pending.
     static ["getToken"](alq) {
       const task = this.captchaQueue.then(() => this._getToken(alq));
       this.captchaQueue = task.catch(() => {});
@@ -5157,20 +5156,24 @@
         if (alq <= 1) {
           Notifications.warn("Drag+", "Solving captcha, please wait..");
         }
-        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
-        const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
+        if (!window.turnstile) {
+          return dq(new Error("Turnstile SDK not loaded"));
+        }
         this.pendingResolvers[alq] = { resolve: lv, reject: dq };
 
-        const doRender = () => {
+        const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
+        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
+
+        const run = () => {
           let wid = this.widgetIds[alq];
           if (undefined === wid) {
             const container = document.querySelector(mu);
             if (!container) {
               return dq(new Error("Turnstile container not found: " + mu));
             }
-            container.innerHTML = "";
-            container.style.visibility = "visible";
             container.style.display = "block";
+            container.style.visibility = "visible";
+            container.innerHTML = "";
             wid = window.turnstile.render(container, {
               sitekey: SITEKEY,
               callback: (xs) => {
@@ -5178,9 +5181,8 @@
                 if (!xs) {
                   return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
                 }
-                const ls = document.getElementById("loading-screen");
-                if (ls) {
-                  $(ls).fadeOut(500, function () { $(this).remove(); });
+                if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
+                  $("#loading-screen").remove();
                 }
                 PacketSender.handleDisabledProperty(false);
                 Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
@@ -5205,57 +5207,13 @@
           } else {
             try {
               window.turnstile.reset(wid);
-            } catch (dg) {
-              const container = document.querySelector(mu);
-              if (container) {
-                container.innerHTML = "";
-                container.style.visibility = "visible";
-                container.style.display = "block";
-                wid = window.turnstile.render(container, {
-                  sitekey: SITEKEY,
-                  callback: (xs) => {
-                    const rz = this.pendingResolvers[alq];
-                    if (!xs) return;
-                    const ls = document.getElementById("loading-screen");
-                    if (ls) {
-                      $(ls).fadeOut(500, function () { $(this).remove(); });
-                    }
-                    PacketSender.handleDisabledProperty(false);
-                    Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
-                    if (rz) return rz.resolve(xs);
-                  },
-                  "expired-callback": () => {
-                    const rz = this.pendingResolvers[alq];
-                    if (rz) rz.reject(new Error("Turnstile token expired for tab " + alq));
-                  },
-                  "error-callback": () => {
-                    const rz = this.pendingResolvers[alq];
-                    if (rz) rz.reject(new Error("Turnstile error for tab " + alq));
-                  },
-                });
-                this.widgetIds[alq] = wid;
-              }
-            }
+            } catch (dg) {}
           }
           try {
             window.turnstile.execute(wid);
-          } catch (ex) {
-            console.log("[Drag+] Turnstile execute error:", ex);
-          }
+          } catch (ex) {}
         };
-
-        let attempts = 0;
-        const maxAttempts = 30;
-        const waitForSdk = () => {
-          if (window.turnstile && window.turnstile.render) {
-            doRender();
-          } else if (++attempts <= maxAttempts) {
-            setTimeout(waitForSdk, 300);
-          } else {
-            dq(new Error("Cloudflare Turnstile SDK failed to load after " + (maxAttempts * 300) + "ms"));
-          }
-        };
-        waitForSdk();
+        setTimeout(run, 100);
       });
     }
     static ["connect"](hy, aff) {
@@ -8014,14 +7972,10 @@
       this.time = Date.now();
     }
   }
-        }.init())
-  );
-  var bootGame = function() {
-    if (bootGame._done) return;
-    bootGame._done = true;
+  window.onload = () => (
     $("#loading-screen").html(
       '<div class="ls-title">Drag+</div><div class="ls-spinner"><span id="ls-icon"><i class="fa fa-solid fa-circle-notch fa-spin"></i></span><span style="display:block;" id="ls-message">Loading...</span></div>',
-    );
+    ),
     49 > GameLoop.browserVersion()
       ? ($("#ls-icon").html('<i class="fa fa-chrome" aria-hidden="true"></i>'),
         void $("#ls-message").text(" Only Chrome version 49 or higher are supported."))
@@ -8064,12 +8018,6 @@
           static ["getApiUrl"]() {
             return window.atob(window.atob(window.atob(this.apiUrl)));
           }
-        }.init());
-  };
-  if (document.readyState === "complete" || document.readyState === "interactive") {
-    bootGame();
-  } else {
-    window.addEventListener("DOMContentLoaded", bootGame);
-    window.addEventListener("load", bootGame);
-  }
+        }.init())
+  );
 })(window, $, document);
