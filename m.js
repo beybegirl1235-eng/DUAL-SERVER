@@ -5164,18 +5164,15 @@
 
         const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
 
-        // The 2026 protocol server now validates Cloudflare Turnstile tokens
-        // (provider "turnstile" via the injected __captchaCfg). One invisible
-        // widget per tab: render on first use, reset on later reconnects.
-        const sitekey = (window.__captchaCfg && typeof window.__captchaCfg.siteKey === "string" && window.__captchaCfg.siteKey)
-          || "0x4AAAAAAEkQx2FZR28MuMJC";
+        // The 2026 protocol server validates Cloudflare Turnstile tokens
+        // (sitekey of 3rb.io itself). One invisible widget per tab: render
+        // it on first use, reset + re-execute on later reconnects.
         const run = () => {
           let wid = this.widgetIds[alq];
           if (undefined === wid) {
             wid = window.turnstile.render(document.querySelector(mu), {
-              sitekey,
-              execution: "execute",
-              appearance: "interaction-only",
+              sitekey: "0x4AAAAAABwAtcdv_5-aS9cf",
+              size: "invisible",
               callback: (xs) => {
                 const rz = this.pendingResolvers[alq];
                 if (!xs) {
@@ -5209,8 +5206,9 @@
               window.turnstile.reset(wid);
             } catch (dg) {}
           }
+          window.turnstile.execute(wid);
         };
-        run();
+        window.turnstile.ready(run);
       });
     }
     static ["connect"](hy, aff) {
@@ -5300,7 +5298,7 @@
           this.flushProtoQueue(slot);
         }
       }, 700);
-      const socket = new WebSocket(this.ip, "d1elnjtfbyzq7a");
+      const socket = new WebSocket(this.ip, "algamees");
       if (1 === slot) this.ws = socket;
       else if (2 === slot) this.ws2 = socket;
       else this.ws3 = socket;
