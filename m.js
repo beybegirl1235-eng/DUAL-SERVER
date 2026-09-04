@@ -5147,9 +5147,7 @@
     // The captcha queue serializes token requests so the standby tab never
     // renders a third widget while an earlier one is still pending.
     static ["getToken"](alq) {
-      const task = this.captchaQueue.then(() => this._getToken(alq));
-      this.captchaQueue = task.catch(() => {});
-      return task;
+      return this._getToken(alq);
     }
     static async ["_getToken"](alq) {
       return new Promise((lv, dq) => {
@@ -5159,61 +5157,23 @@
         if (!window.turnstile) {
           return dq(new Error("Turnstile SDK not loaded"));
         }
-        this.pendingResolvers[alq] = { resolve: lv, reject: dq };
-
-        const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
-        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
-
-        const run = () => {
-          let wid = this.widgetIds[alq];
-          if (undefined === wid) {
-            const container = document.querySelector(mu);
-            if (!container) {
-              return dq(new Error("Turnstile container not found: " + mu));
+        const mu = alq === 1 ? ".cf-turnstile" : ".cf-turnstile";
+        window.turnstile.render(mu, {
+          sitekey: "0x4AAAAAAEkQx2FZR28MuMJC",
+          callback: (xs) => {
+            if (!xs) {
+              return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
             }
-            container.style.display = "block";
-            container.style.visibility = "visible";
-            container.innerHTML = "";
-            wid = window.turnstile.render(container, {
-              sitekey: SITEKEY,
-              callback: (xs) => {
-                const rz = this.pendingResolvers[alq];
-                if (!xs) {
-                  return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
-                }
-                if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
-                  $("#loading-screen").remove();
-                }
-                PacketSender.handleDisabledProperty(false);
-                Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
-                if (rz) {
-                  return rz.resolve(xs);
-                }
-              },
-              "expired-callback": () => {
-                const rz = this.pendingResolvers[alq];
-                if (rz) {
-                  rz.reject(new Error("Turnstile token expired for tab " + alq));
-                }
-              },
-              "error-callback": () => {
-                const rz = this.pendingResolvers[alq];
-                if (rz) {
-                  rz.reject(new Error("Turnstile error for tab " + alq));
-                }
-              },
-            });
-            this.widgetIds[alq] = wid;
-          } else {
-            try {
-              window.turnstile.reset(wid);
-            } catch (dg) {}
-          }
-          try {
-            window.turnstile.execute(wid);
-          } catch (ex) {}
-        };
-        setTimeout(run, 100);
+            if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
+              $("#loading-screen").remove();
+            }
+            PacketSender.handleDisabledProperty(false);
+            Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
+            return lv(xs);
+          },
+          "expired-callback": dq,
+          "error-callback": dq
+        });
       });
     }
     static ["connect"](hy, aff) {
