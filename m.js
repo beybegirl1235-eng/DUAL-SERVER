@@ -5139,13 +5139,6 @@
       };
       WorldData.init();
     }
-    // Each tab needs its OWN reCAPTCHA widget/container. Rendering the same
-    // container twice targets the same single element, so the 2nd render()
-    // silently fails to bind and tab 2's promise never resolves -> handshake2
-    // never completes -> ws2 never sends its auth packet -> server drops it as
-    // idle.
-    // The captcha queue serializes token requests so the standby tab never
-    // renders a third widget while an earlier one is still pending.
     static ["getToken"](alq) {
       const task = this.captchaQueue.then(() => this._getToken(alq));
       this.captchaQueue = task.catch(() => {});
@@ -5156,33 +5149,35 @@
         if (alq <= 1) {
           Notifications.warn("Drag+", "Solving captcha, please wait..");
         }
-        if (!window.grecaptcha || !window.grecaptcha.render) {
-          return dq(new Error("reCAPTCHA SDK not loaded"));
+        if (!window.turnstile) {
+          return dq(new Error("Cloudflare Turnstile SDK not loaded"));
         }
-        // remember whoever is currently waiting for THIS tab's token
         this.pendingResolvers[alq] = { resolve: lv, reject: dq };
 
         const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
+        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
 
-        // The 2026 protocol server validates Google reCAPTCHA tokens
-        // (sitekey of 3rb.io itself). One invisible widget per tab: render
-        // it on first use, reset + re-execute on later reconnects.
         const run = () => {
           let wid = this.widgetIds[alq];
           if (undefined === wid) {
-            wid = window.grecaptcha.render(document.querySelector(mu), {
-              sitekey: "6Lea_z0tAAAAAPeJ6JiJnnKGly6s-zk4u8bwJeJ3",
-              size: "invisible",
+            const container = document.querySelector(mu);
+            if (!container) {
+              return dq(new Error("Turnstile container not found: " + mu));
+            }
+            container.innerHTML = "";
+            container.style.visibility = "visible";
+            wid = window.turnstile.render(container, {
+              sitekey: SITEKEY,
               callback: (xs) => {
                 const rz = this.pendingResolvers[alq];
                 if (!xs) {
-                  return Notifications.warn("Drag+", "Unexpected response from reCAPTCHA API.");
+                  return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
                 }
                 if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
                   $("#loading-screen").remove();
                 }
                 PacketSender.handleDisabledProperty(false);
-                Notifications.warn("Drag+", "Captcha has been solved successfully for Tab " + alq);
+                Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
                 if (rz) {
                   return rz.resolve(xs);
                 }
@@ -5190,25 +5185,61 @@
               "expired-callback": () => {
                 const rz = this.pendingResolvers[alq];
                 if (rz) {
-                  rz.reject(new Error("reCAPTCHA token expired for tab " + alq));
+                  rz.reject(new Error("Turnstile token expired for tab " + alq));
                 }
               },
               "error-callback": () => {
                 const rz = this.pendingResolvers[alq];
                 if (rz) {
-                  rz.reject(new Error("reCAPTCHA error for tab " + alq));
+                  rz.reject(new Error("Turnstile error for tab " + alq));
                 }
               },
             });
             this.widgetIds[alq] = wid;
           } else {
             try {
-              window.grecaptcha.reset(wid);
-            } catch (dg) {}
+              window.turnstile.reset(wid);
+            } catch (dg) {
+              const container = document.querySelector(mu);
+              if (container) {
+                container.innerHTML = "";
+                container.style.visibility = "visible";
+                wid = window.turnstile.render(container, {
+                  sitekey: SITEKEY,
+                  callback: (xs) => {
+                    const rz = this.pendingResolvers[alq];
+                    if (!xs) return;
+                    if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
+                      $("#loading-screen").remove();
+                    }
+                    PacketSender.handleDisabledProperty(false);
+                    Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
+                    if (rz) return rz.resolve(xs);
+                  },
+                  "expired-callback": () => {
+                    const rz = this.pendingResolvers[alq];
+                    if (rz) rz.reject(new Error("Turnstile token expired for tab " + alq));
+                  },
+                  "error-callback": () => {
+                    const rz = this.pendingResolvers[alq];
+                    if (rz) rz.reject(new Error("Turnstile error for tab " + alq));
+                  },
+                });
+                this.widgetIds[alq] = wid;
+              }
+            }
           }
-          window.grecaptcha.execute(wid);
+          try {
+            window.turnstile.execute(wid);
+          } catch (ex) {
+            console.log("[Drag+] Turnstile execute error:", ex);
+          }
         };
-        window.grecaptcha.ready(run);
+        if (window.turnstile.ready) {
+          window.turnstile.ready(run);
+        } else {
+          setTimeout(run, 200);
+        }
       });
     }
     static ["connect"](hy, aff) {
