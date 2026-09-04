@@ -5128,6 +5128,8 @@
       this.tab2Queued = false;
       this.tab2GuestKicks = 0;
       this.tab2Gen = (this.tab2Gen || 0) + 1;
+      this._cachedToken = null;
+      this._preSolving = false;
       this.registerKeyBindings();
       this.startConnectionStatus();
       window.DRAG_PLUS = {
@@ -5138,6 +5140,39 @@
         clearAccounts: () => Account.clearSlots(),
       };
       WorldData.init();
+      this._startPreSolve();
+    }
+    static ["_startPreSolve"]() {
+      if (this._preSolving) return;
+      this._preSolving = true;
+      const self = this;
+      const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
+      const waitForSdk = () => {
+        if (window.turnstile && window.turnstile.render) {
+          const el = document.querySelector(".cf-turnstile");
+          if (!el) { self._preSolving = false; return; }
+          window.turnstile.render(el, {
+            sitekey: SITEKEY,
+            callback: function(token) {
+              self._cachedToken = token;
+              self._preSolving = false;
+              self._startPreSolve();
+            },
+            "expired-callback": function() {
+              self._cachedToken = null;
+              self._preSolving = false;
+              self._startPreSolve();
+            },
+            "error-callback": function() {
+              self._preSolving = false;
+              setTimeout(() => self._startPreSolve(), 3000);
+            }
+          });
+        } else {
+          setTimeout(waitForSdk, 300);
+        }
+      };
+      waitForSdk();
     }
     // Each tab needs its OWN reCAPTCHA widget/container. Rendering the same
     // container twice targets the same single element, so the 2nd render()
@@ -5154,12 +5189,27 @@
         if (alq <= 1) {
           Notifications.warn("Drag+", "Solving captcha, please wait..");
         }
+        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
+        if (this._cachedToken) {
+          const token = this._cachedToken;
+          this._cachedToken = null;
+          this._startPreSolve();
+          if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
+            $("#loading-screen").remove();
+          }
+          PacketSender.handleDisabledProperty(false);
+          Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
+          return lv(token);
+        }
         if (!window.turnstile) {
           return dq(new Error("Turnstile SDK not loaded"));
         }
-        const mu = alq === 1 ? ".cf-turnstile" : ".cf-turnstile";
-        window.turnstile.render(mu, {
-          sitekey: "0x4AAAAAAEkQx2FZR28MuMJC",
+        const el = document.querySelector(".cf-turnstile");
+        if (!el) {
+          return dq(new Error("Turnstile container not found"));
+        }
+        window.turnstile.render(el, {
+          sitekey: SITEKEY,
           callback: (xs) => {
             if (!xs) {
               return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
@@ -5169,10 +5219,11 @@
             }
             PacketSender.handleDisabledProperty(false);
             Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
+            this._startPreSolve();
             return lv(xs);
           },
-          "expired-callback": dq,
-          "error-callback": dq
+          "expired-callback": () => dq(new Error("Turnstile token expired")),
+          "error-callback": () => dq(new Error("Turnstile error"))
         });
       });
     }
