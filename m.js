@@ -6039,14 +6039,7 @@
       }
       this.stopPingLoop(adx);
       this.handshake1(adx);
-      const ok = await this.handshake2(adx);
-      if (!ok) {
-        const target = 1 === adx ? WsConnection.ws : 2 === adx ? WsConnection.ws2 : WsConnection.ws3;
-        try {
-          target && target.close();
-        } catch (e) {}
-        return;
-      }
+      this.handshake2(adx);
       this.initPingLoop(adx);
       this.accountPacketSent = false;
       Camera.isSpectating = false;
@@ -6058,8 +6051,6 @@
         WsConnection.queueTab2();
       } else if (2 === adx) {
         WsConnection.connected2 = true;
-        // Tab 2 just became playable: if Tab 1 already has a cell, bring
-        // Tab 2's cell back automatically so the pair stays together.
         if (Player._isAlive) {
           setTimeout(() => this.spawnTab(2), 400);
         }
