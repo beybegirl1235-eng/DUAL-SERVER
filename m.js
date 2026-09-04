@@ -5128,8 +5128,6 @@
       this.tab2Queued = false;
       this.tab2GuestKicks = 0;
       this.tab2Gen = (this.tab2Gen || 0) + 1;
-      this._cachedToken = null;
-      this._preSolving = false;
       this.registerKeyBindings();
       this.startConnectionStatus();
       window.DRAG_PLUS = {
@@ -5140,39 +5138,6 @@
         clearAccounts: () => Account.clearSlots(),
       };
       WorldData.init();
-      this._startPreSolve();
-    }
-    static ["_startPreSolve"]() {
-      if (this._preSolving) return;
-      this._preSolving = true;
-      const self = this;
-      const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
-      const waitForSdk = () => {
-        if (window.turnstile && window.turnstile.render) {
-          const el = document.querySelector(".cf-turnstile");
-          if (!el) { self._preSolving = false; return; }
-          window.turnstile.render(el, {
-            sitekey: SITEKEY,
-            callback: function(token) {
-              self._cachedToken = token;
-              self._preSolving = false;
-              self._startPreSolve();
-            },
-            "expired-callback": function() {
-              self._cachedToken = null;
-              self._preSolving = false;
-              self._startPreSolve();
-            },
-            "error-callback": function() {
-              self._preSolving = false;
-              setTimeout(() => self._startPreSolve(), 3000);
-            }
-          });
-        } else {
-          setTimeout(waitForSdk, 300);
-        }
-      };
-      waitForSdk();
     }
     // Each tab needs its OWN reCAPTCHA widget/container. Rendering the same
     // container twice targets the same single element, so the 2nd render()
@@ -5182,49 +5147,70 @@
     // The captcha queue serializes token requests so the standby tab never
     // renders a third widget while an earlier one is still pending.
     static ["getToken"](alq) {
-      return this._getToken(alq);
+      const task = this.captchaQueue.then(() => this._getToken(alq));
+      this.captchaQueue = task.catch(() => {});
+      return task;
     }
     static async ["_getToken"](alq) {
       return new Promise((lv, dq) => {
         if (alq <= 1) {
           Notifications.warn("Drag+", "Solving captcha, please wait..");
         }
-        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
-        if (this._cachedToken) {
-          const token = this._cachedToken;
-          this._cachedToken = null;
-          this._startPreSolve();
-          if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
-            $("#loading-screen").remove();
-          }
-          PacketSender.handleDisabledProperty(false);
-          Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
-          return lv(token);
-        }
-        if (!window.turnstile) {
+        if (!window.turnstile || !window.turnstile.render) {
           return dq(new Error("Turnstile SDK not loaded"));
         }
-        const el = document.querySelector(".cf-turnstile");
-        if (!el) {
-          return dq(new Error("Turnstile container not found"));
-        }
-        window.turnstile.render(el, {
-          sitekey: SITEKEY,
-          callback: (xs) => {
-            if (!xs) {
-              return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
-            }
-            if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
-              $("#loading-screen").remove();
-            }
-            PacketSender.handleDisabledProperty(false);
-            Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
-            this._startPreSolve();
-            return lv(xs);
-          },
-          "expired-callback": () => dq(new Error("Turnstile token expired")),
-          "error-callback": () => dq(new Error("Turnstile error"))
-        });
+        // remember whoever is currently waiting for THIS tab's token
+        this.pendingResolvers[alq] = { resolve: lv, reject: dq };
+
+        const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
+
+        // The 2026 protocol server now validates Cloudflare Turnstile tokens
+        // (provider "turnstile" via the injected __captchaCfg). One invisible
+        // widget per tab: render on first use, reset on later reconnects.
+        const sitekey = (window.__captchaCfg && typeof window.__captchaCfg.siteKey === "string" && window.__captchaCfg.siteKey)
+          || "0x4AAAAAAEkQx2FZR28MuMJC";
+        const run = () => {
+          let wid = this.widgetIds[alq];
+          if (undefined === wid) {
+            wid = window.turnstile.render(document.querySelector(mu), {
+              sitekey,
+              execution: "execute",
+              appearance: "interaction-only",
+              callback: (xs) => {
+                const rz = this.pendingResolvers[alq];
+                if (!xs) {
+                  return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
+                }
+                if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
+                  $("#loading-screen").remove();
+                }
+                PacketSender.handleDisabledProperty(false);
+                Notifications.warn("Drag+", "Captcha has been solved successfully for Tab " + alq);
+                if (rz) {
+                  return rz.resolve(xs);
+                }
+              },
+              "expired-callback": () => {
+                const rz = this.pendingResolvers[alq];
+                if (rz) {
+                  rz.reject(new Error("Turnstile token expired for tab " + alq));
+                }
+              },
+              "error-callback": () => {
+                const rz = this.pendingResolvers[alq];
+                if (rz) {
+                  rz.reject(new Error("Turnstile error for tab " + alq));
+                }
+              },
+            });
+            this.widgetIds[alq] = wid;
+          } else {
+            try {
+              window.turnstile.reset(wid);
+            } catch (dg) {}
+          }
+        };
+        run();
       });
     }
     static ["connect"](hy, aff) {
@@ -6039,7 +6025,14 @@
       }
       this.stopPingLoop(adx);
       this.handshake1(adx);
-      this.handshake2(adx);
+      const ok = await this.handshake2(adx);
+      if (!ok) {
+        const target = 1 === adx ? WsConnection.ws : 2 === adx ? WsConnection.ws2 : WsConnection.ws3;
+        try {
+          target && target.close();
+        } catch (e) {}
+        return;
+      }
       this.initPingLoop(adx);
       this.accountPacketSent = false;
       Camera.isSpectating = false;
@@ -6051,6 +6044,8 @@
         WsConnection.queueTab2();
       } else if (2 === adx) {
         WsConnection.connected2 = true;
+        // Tab 2 just became playable: if Tab 1 already has a cell, bring
+        // Tab 2's cell back automatically so the pair stays together.
         if (Player._isAlive) {
           setTimeout(() => this.spawnTab(2), 400);
         }
