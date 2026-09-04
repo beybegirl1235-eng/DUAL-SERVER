@@ -1,4 +1,12 @@
 !(function (window, $, document) {
+  (function loadTurnstile() {
+    if (document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]')) return;
+    var s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+    s.async = true;
+    s.defer = true;
+    (document.head || document.documentElement).appendChild(s);
+  })();
   const antiDebug = (function () {
     let ka = true;
     return function (hb, dd) {
@@ -5149,15 +5157,11 @@
         if (alq <= 1) {
           Notifications.warn("Drag+", "Solving captcha, please wait..");
         }
-        if (!window.turnstile) {
-          return dq(new Error("Cloudflare Turnstile SDK not loaded"));
-        }
+        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
+        const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
         this.pendingResolvers[alq] = { resolve: lv, reject: dq };
 
-        const mu = alq === 1 ? "#cf-turnstile-1" : alq === 2 ? "#cf-turnstile-2" : "#cf-turnstile-3";
-        const SITEKEY = "0x4AAAAAAEkQx2FZR28MuMJC";
-
-        const run = () => {
+        const doRender = () => {
           let wid = this.widgetIds[alq];
           if (undefined === wid) {
             const container = document.querySelector(mu);
@@ -5166,6 +5170,7 @@
             }
             container.innerHTML = "";
             container.style.visibility = "visible";
+            container.style.display = "block";
             wid = window.turnstile.render(container, {
               sitekey: SITEKEY,
               callback: (xs) => {
@@ -5173,8 +5178,9 @@
                 if (!xs) {
                   return Notifications.warn("Drag+", "Unexpected response from Turnstile API.");
                 }
-                if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
-                  $("#loading-screen").remove();
+                const ls = document.getElementById("loading-screen");
+                if (ls) {
+                  $(ls).fadeOut(500, function () { $(this).remove(); });
                 }
                 PacketSender.handleDisabledProperty(false);
                 Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
@@ -5204,13 +5210,15 @@
               if (container) {
                 container.innerHTML = "";
                 container.style.visibility = "visible";
+                container.style.display = "block";
                 wid = window.turnstile.render(container, {
                   sitekey: SITEKEY,
                   callback: (xs) => {
                     const rz = this.pendingResolvers[alq];
                     if (!xs) return;
-                    if ($("#loading-screen") && $("#loading-screen").fadeOut(500)) {
-                      $("#loading-screen").remove();
+                    const ls = document.getElementById("loading-screen");
+                    if (ls) {
+                      $(ls).fadeOut(500, function () { $(this).remove(); });
                     }
                     PacketSender.handleDisabledProperty(false);
                     Notifications.warn("Drag+", "Captcha solved for Tab " + alq);
@@ -5235,11 +5243,19 @@
             console.log("[Drag+] Turnstile execute error:", ex);
           }
         };
-        if (window.turnstile.ready) {
-          window.turnstile.ready(run);
-        } else {
-          setTimeout(run, 200);
-        }
+
+        let attempts = 0;
+        const maxAttempts = 30;
+        const waitForSdk = () => {
+          if (window.turnstile && window.turnstile.render) {
+            doRender();
+          } else if (++attempts <= maxAttempts) {
+            setTimeout(waitForSdk, 300);
+          } else {
+            dq(new Error("Cloudflare Turnstile SDK failed to load after " + (maxAttempts * 300) + "ms"));
+          }
+        };
+        waitForSdk();
       });
     }
     static ["connect"](hy, aff) {
@@ -7998,10 +8014,14 @@
       this.time = Date.now();
     }
   }
-  window.onload = () => (
+        }.init())
+  );
+  var bootGame = function() {
+    if (bootGame._done) return;
+    bootGame._done = true;
     $("#loading-screen").html(
       '<div class="ls-title">Drag+</div><div class="ls-spinner"><span id="ls-icon"><i class="fa fa-solid fa-circle-notch fa-spin"></i></span><span style="display:block;" id="ls-message">Loading...</span></div>',
-    ),
+    );
     49 > GameLoop.browserVersion()
       ? ($("#ls-icon").html('<i class="fa fa-chrome" aria-hidden="true"></i>'),
         void $("#ls-message").text(" Only Chrome version 49 or higher are supported."))
@@ -8044,6 +8064,12 @@
           static ["getApiUrl"]() {
             return window.atob(window.atob(window.atob(this.apiUrl)));
           }
-        }.init())
-  );
+        }.init());
+  };
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    bootGame();
+  } else {
+    window.addEventListener("DOMContentLoaded", bootGame);
+    window.addEventListener("load", bootGame);
+  }
 })(window, $, document);
